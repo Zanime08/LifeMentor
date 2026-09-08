@@ -1,5 +1,7 @@
 import type { ServerDb } from '../db';
 import { createLogger } from '@lifementor/core';
+import type { AIProvider } from '@lifementor/core';
+import { z } from 'zod';
 
 const log = createLogger('news');
 
@@ -14,7 +16,87 @@ const log = createLogger('news');
  * into its local SQLite, so the feed and the daily digest stay readable
  * offline. No fake items are ever generated: if a feed cannot be fetched,
  * its absence is reported honestly.
+ *
+ * Enrichment: when a cloud AI provider is configured, new items are enriched
+ * with LLM-generated what_happened / why_it_matters / context (cheap model,
+ * structured output, capped per refresh — docs/10). Without a provider — or
+ * on any AI failure/timeout — the deterministic templates below are used, so
+ * the feed never blocks on the AI and never invents facts the AI hallucinated
+ * (the prompt forbids adding facts; the fields are bounded strings).
  */
+
+export interface NewsEnrichment {
+  what_happened: string;
+  why_it_matters: string;
+  context: string;
+}
+
+/** Server-side LLM enrichment. `null` result → the deterministic fallback is used. */
+export type NewsEnricher = (input: {
+  title: string;
+  summary: string | null;
+  category: string;
+  sourceName: string;
+  publishedAt: string | null;
+  urgent: boolean;
+}) => Promise<NewsEnrichment | null>;
+
+/** Hard cost cap per refresh (§97): a feed cycle must stay cheap and fast. */
+const MAX_ENRICH_PER_REFRESH = 6;
+const ENRICH_TIMEOUT_MS = 10_000;
+
+const ENRICHMENT_SCHEMA = z.object({
+  what_happened: z.string().min(8).max(600),
+  why_it_matters: z.string().min(8).max(600),
+  context: z.string().min(5).max(300),
+});
+
+/**
+ * Build the LLM enricher from a cloud AI provider. Bounded by design: cheap
+ * tier, 300 max tokens, 10s timeout, no tools, no retries — any failure
+ * returns null and the caller keeps the deterministic text.
+ */
+export function createNewsEnricher(provider: AIProvider): NewsEnricher {
+  return async (input) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ENRICH_TIMEOUT_MS);
+    try {
+      const prompt = [
+        'Ты — редактор новостной ленты персонального ментора. По заголовку и анонсу составь ровно три поля на русском языке.',
+        'what_happened: что случилось — 1–2 предложения строго по тексту, ничего не домысливать.',
+        'why_it_matters: почему это может быть важно для личного планирования человека — 1 предложение, без обещаний и прогнозов.',
+        'context: строка «Источник, дата» (дату — как в данных ниже, если даты нет — «Источник, дата не указана»).',
+        `Источник: ${input.sourceName}`,
+        `Дата: ${input.publishedAt ?? 'не указана'}`,
+        `Категория: ${input.category}`,
+        `Заголовок: ${input.title}`,
+        ...(input.summary ? [`Анонс: ${input.summary.slice(0, 700)}`] : []),
+      ].join('\n');
+
+      const data = await provider.generateStructured(
+        {
+          messages: [{ role: 'user', content: prompt }],
+          tier: 'cheap',
+          intent: 'news_enrichment',
+          maxTokens: 300,
+          temperature: 0.2,
+          signal: controller.signal,
+        },
+        ENRICHMENT_SCHEMA,
+      );
+      return {
+        what_happened: data.what_happened.trim(),
+        why_it_matters: data.why_it_matters.trim(),
+        context: data.context.trim(),
+      };
+    } catch (error) {
+      log.debug('news enrichment failed — using deterministic text', { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
 
 export interface NewsFeedItem {
   id: string;
@@ -148,6 +230,7 @@ function impactOf(title: string, summary: string | null): string | null {
 export class NewsFeedService {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private enrichBudget = 0;
 
   /**
    * Hook for server-initiated push (docs/08 §5): called after a refresh that added urgent
@@ -156,7 +239,12 @@ export class NewsFeedService {
    */
   onNewUrgent: ((items: { url: string; title: string }[]) => Promise<unknown> | unknown) | null = null;
 
-  constructor(private readonly db: ServerDb, private readonly intervalMs = 30 * 60_000) {}
+  constructor(
+    private readonly db: ServerDb,
+    private readonly intervalMs = 30 * 60_000,
+    /** LLM enricher (docs/10). `null` → deterministic templates only. */
+    private readonly enricher: NewsEnricher | null = null,
+  ) {}
 
   async start(): Promise<void> {
     await this.ensureDefaultSources();
@@ -190,6 +278,7 @@ export class NewsFeedService {
   async refresh(): Promise<{ ok: number; failed: number; added: number; error?: string }> {
     if (this.running) return { ok: 0, failed: 0, added: 0, error: 'refresh already in progress' };
     this.running = true;
+    this.enrichBudget = this.enricher ? MAX_ENRICH_PER_REFRESH : 0;
     try {
       await this.ensureDefaultSources();
       const sources = await this.db.all<{ id: string; url: string; category: string; kind: string; name: string }>(
@@ -252,15 +341,37 @@ export class NewsFeedService {
       const exists = await this.db.get('SELECT url_hash FROM news_cache WHERE url_hash = ?', [urlHash]);
       if (exists) continue;
       const urgency = urgencyOf(item.title, item.summary);
-      const why = WHY_RU_EN[source.category] ?? WHY_RU_EN.world;
-      const context = `${source.name}, ${item.publishedAt ? new Date(item.publishedAt).toUTCString() : 'дата не указана'}`;
+      // Deterministic baseline (always available — the feed never blocks on the AI).
+      let what = item.summary ?? item.title;
+      let why = WHY_RU_EN[source.category] ?? WHY_RU_EN.world;
+      let context = `${source.name}, ${item.publishedAt ? new Date(item.publishedAt).toUTCString() : 'дата не указана'}`;
+
+      // LLM enrichment when configured and within the per-refresh cost cap. Any failure or a
+      // null result keeps the deterministic text above (honest fallback, never fake facts).
+      if (this.enricher && this.enrichBudget > 0) {
+        this.enrichBudget -= 1;
+        const enriched = await this.enricher({
+          title: item.title,
+          summary: item.summary,
+          category: source.category,
+          sourceName: source.name,
+          publishedAt: item.publishedAt,
+          urgent: urgency === 'urgent',
+        }).catch(() => null);
+        if (enriched) {
+          what = enriched.what_happened;
+          why = enriched.why_it_matters;
+          context = enriched.context;
+        }
+      }
+
       await this.db.run(
         `INSERT INTO news_cache (url_hash, source_id, title, url, summary, what_happened, why_it_matters, context, impact, category, urgency, published_at, fetched_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(url_hash) DO NOTHING`,
         [
           urlHash, source.id, item.title, item.url, item.summary,
-          item.summary ?? item.title, why, context, impactOf(item.title, item.summary),
+          what, why, context, impactOf(item.title, item.summary),
           source.category, urgency, item.publishedAt, new Date().toISOString(),
         ],
       );

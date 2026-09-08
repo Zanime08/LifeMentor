@@ -1,12 +1,12 @@
 import type { AIProvider } from '@lifementor/core';
-import type { ServerConfig } from './config';
+import { hasCloudAI, type ServerConfig } from './config';
 import { ServerDb } from './db';
 import { AuditLog } from './services/audit';
 import { AiGateway } from './services/ai-gateway';
 import { SyncStore } from './services/sync-store';
 import { TokenService, type JwtSigner } from './services/tokens';
 import { UserStore } from './services/users';
-import { NewsFeedService } from './services/news-feed';
+import { NewsFeedService, createNewsEnricher } from './services/news-feed';
 import { FcmClient } from './services/fcm';
 import { PushService } from './services/push';
 import { CloudBackupStore } from './services/cloud-backup';
@@ -61,7 +61,14 @@ export async function createContext(config: ServerConfig, overrides: ContextOver
   const ai = new AiGateway(db, audit, config, overrides.aiProvider);
 
   // News polling runs only in real (non-test) servers; tests stay hermetic.
-  const news = new NewsFeedService(db, config.env === 'test' ? Number.MAX_SAFE_INTEGER : 30 * 60_000);
+  // LLM enrichment activates only when a real cloud provider is configured — the local
+  // heuristic is the deterministic fallback, not an LLM, so it must not be labeled as one.
+  const newsEnricher = hasCloudAI(config) ? createNewsEnricher(ai.provider) : null;
+  const news = new NewsFeedService(
+    db,
+    config.env === 'test' ? Number.MAX_SAFE_INTEGER : 30 * 60_000,
+    newsEnricher,
+  );
   if (config.env !== 'test') void news.start();
 
   // FCM transport (Android, docs/11 §8): enabled only when a Firebase service account is

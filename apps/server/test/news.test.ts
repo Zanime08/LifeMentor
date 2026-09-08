@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { buildServer } from '../src/app';
 import { loadConfig } from '../src/config';
 import type { ServerConfig } from '../src/config';
+import { ServerDb } from '../src/db';
+import { NewsFeedService, createNewsEnricher } from '../src/services/news-feed';
+import type { NewsEnricher } from '../src/services/news-feed';
 
 function testConfig(): ServerConfig {
   const config = loadConfig();
@@ -55,6 +58,135 @@ describe('news engine (server)', () => {
       globalThis.fetch = originalFetch;
       await shutdown().catch(() => undefined);
     }
+  });
+
+  it('enriches new items with the LLM within the per-refresh cap, falls back on failure', async () => {
+    const db = await ServerDb.open({ inMemory: true });
+    try {
+      let calls = 0;
+      const enricher: NewsEnricher = async (input) => {
+        calls += 1;
+        // The second item's enrichment fails — that item must get the deterministic text.
+        if (input.title.includes('framework')) throw new Error('AI unavailable');
+        return {
+          what_happened: `AI: ${input.title.slice(0, 40)}`,
+          why_it_matters: 'AI: важно для планирования',
+          context: `AI: ${input.sourceName}`,
+        };
+      };
+      const svc = new NewsFeedService(db, Number.MAX_SAFE_INTEGER, enricher);
+      await svc.ensureDefaultSources();
+      await db.run('UPDATE news_sources SET enabled = 0');
+      await db.run(
+        "INSERT INTO news_sources (id, name, url, category, kind, enabled, created_at) VALUES ('feed-test', 'Test Feed', 'https://example.com/feed.xml', 'economy', 'rss', 1, ?)",
+        [new Date().toISOString()],
+      );
+
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        if (String(input).includes('example.com')) {
+          return new Response(RSS, { status: 200, headers: { 'content-type': 'application/rss+xml' } });
+        }
+        return originalFetch(input as RequestInfo);
+      }) as typeof fetch;
+      try {
+        const result = await svc.refresh();
+        expect(result.added).toBe(2);
+
+        // Both items went through the enricher (within the cap of 6).
+        expect(calls).toBe(2);
+
+        const items = await svc.items(50);
+        const urgent = items.items.find((i) => i.urgency === 'urgent');
+        const failed = items.items.find((i) => i.title.includes('framework'));
+        // The successful item carries the AI text.
+        expect(urgent?.what_happened).toContain('AI:');
+        expect(urgent?.why_it_matters).toContain('AI:');
+        expect(urgent?.context).toContain('AI: Test Feed');
+        // The failed item fell back to deterministic text (summary as what, category template as why).
+        expect(failed?.what_happened).not.toContain('AI:');
+        expect(failed?.why_it_matters).toContain('Макроэкономика');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('respects the per-refresh enrichment cap (cost control, §97)', async () => {
+    const db = await ServerDb.open({ inMemory: true });
+    try {
+      const enricher: NewsEnricher = async () => ({
+        what_happened: 'AI: x', why_it_matters: 'AI: y', context: 'AI: z',
+      });
+      const svc = new NewsFeedService(db, Number.MAX_SAFE_INTEGER, enricher);
+      await svc.ensureDefaultSources();
+      await db.run('UPDATE news_sources SET enabled = 0');
+      // A feed with 10 distinct items — more than the cap of 6.
+      const items = Array.from({ length: 10 }, (_, i) =>
+        `<item><title>Ordinary item number ${i + 1}</title><link>https://example.com/${i + 1}</link>` +
+        `<pubDate>Mon, 07 Sep 2026 10:00:00 GMT</pubDate><description>text ${i + 1}</description></item>`).join('');
+      const many = `<?xml version="1.0"?><rss version="2.0"><channel><title>Many</title>${items}</channel></rss>`;
+
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        if (String(input).includes('example.com')) return new Response(many, { status: 200, headers: { 'content-type': 'application/rss+xml' } });
+        return originalFetch(input as RequestInfo);
+      }) as typeof fetch;
+      try {
+        await db.run(
+          "INSERT INTO news_sources (id, name, url, category, kind, enabled, created_at) VALUES ('feed-test', 'Test Feed', 'https://example.com/feed.xml', 'world', 'rss', 1, ?)",
+          [new Date().toISOString()],
+        );
+        const result = await svc.refresh();
+        expect(result.added).toBe(10);
+
+        // Only the first 6 got AI text; the rest kept the deterministic fallback.
+        const all = await svc.items(50);
+        const aiEnriched = all.items.filter((i) => i.what_happened === 'AI: x');
+        expect(aiEnriched).toHaveLength(6);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('createNewsEnricher: structured output, cheap tier, null on provider failure', async () => {
+    const requests: unknown[] = [];
+    const mockProvider = {
+      id: 'mock',
+      capabilities: { generation: true, streaming: false, tools: false, embeddings: false },
+      isAvailable: () => true,
+      stream: async () => { throw new Error('not used'); },
+      embed: async () => [[]],
+      generate: async () => { throw new Error('not used'); },
+      generateStructured: async (request: unknown) => {
+        requests.push(request);
+        return { what_happened: '  Что случилось  ', why_it_matters: '  Почему важно  ', context: '  Источник, 7 сен 2026  ' };
+      },
+    };
+    const enricher = createNewsEnricher(mockProvider as never);
+    const result = await enricher({
+      title: 'Банк поднял ставку', summary: 'Ключевая ставка выросла.', category: 'economy',
+      sourceName: 'Test Feed', publishedAt: '2026-09-07T10:00:00.000Z', urgent: false,
+    });
+    expect(result).toEqual({ what_happened: 'Что случилось', why_it_matters: 'Почему важно', context: 'Источник, 7 сен 2026' });
+    const req = requests[0] as { tier: string; maxTokens: number; messages: { role: string; content: string }[] };
+    expect(req.tier).toBe('cheap');
+    expect(req.maxTokens).toBe(300);
+    expect(req.messages[0].content).toContain('Банк поднял ставку');
+    expect(req.messages[0].content).toContain('Test Feed');
+
+    // Provider failure → null (the caller keeps the deterministic text), never throws.
+    const failing = createNewsEnricher({
+      ...mockProvider,
+      generateStructured: async () => { throw new Error('provider down'); },
+    } as never);
+    await expect(failing({ title: 't', summary: null, category: 'world', sourceName: 's', publishedAt: null, urgent: false }))
+      .resolves.toBeNull();
   });
 
   it('parses RSS and structures items with urgency scoring when fetch succeeds', async () => {
