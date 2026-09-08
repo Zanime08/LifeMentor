@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "@lifementor/core": ["./packages/core/src/index.ts"],
+      "@lifementor/core/*": ["./packages/core/src/*"],
+      "@lifementor/server": ["./apps/server/src/index.ts"],
+      "@lifementor/server/*": ["./apps/server/src/*"]
+    }
+  },
+  "include": [
+    "packages/core/src/**/*.ts",
+    "packages/core/test/**/*.ts",
+    "apps/server/src/**/*.ts",
+    "apps/server/test/**/*.ts",
+    "apps/web/src/**/*.ts",
+    "apps/web/src/**/*.tsx",
+    "scripts/**/*.mjs"
+  ],
+  "exclude": ["node_modules", "**/dist/**"]
+}

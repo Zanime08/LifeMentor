@@ -1,0 +1,49 @@
+# --- dependencies / build output ---
+node_modules/
+dist/
+build/
+out/
+target/
+*.tsbuildinfo
+.vite/
+coverage/
+
+# --- local data (NEVER commit user data) ---
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
+backups/
+exports/
+
+# --- env & secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- logs ---
+logs/
+*.log
+npm-debug.log*
+
+# --- platform build artifacts ---
+apps/desktop/src-tauri/target/
+apps/mobile/android/
+apps/mobile/.gradle/
+*.apk
+*.aab
+*.msi
+*.exe
+*.AppImage
+
+# --- os / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
