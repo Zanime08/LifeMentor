@@ -1,0 +1,27 @@
+{
+  "name": "@lifementor/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LifeMentor core: domain model, SQLite persistence, services, AI orchestration, planning, memory, sync.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/platform/node/index.ts",
+    "./wasm": "./src/platform/wasm/index.ts",
+    "./tauri": "./src/platform/tauri/index.ts",
+    "./capacitor": "./src/platform/capacitor/index.ts",
+    "./schema": "./src/db/schema/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run --dir test",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/sql.js": "^1.4.11",
+    "sql.js": "^1.12.0"
+  }
+}

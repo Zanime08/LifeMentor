@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@lifementor/core": ["../../packages/core/src/index.ts"],
+      "@lifementor/core/*": ["../../packages/core/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "build.mjs"]
+}

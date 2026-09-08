@@ -1,0 +1,29 @@
+{
+  "name": "@lifementor/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LifeMentor backend: auth, sync API, AI gateway (keys server-side), news service, notifications, backups.",
+  "main": "dist/server/index.js",
+  "scripts": {
+    "dev": "tsx watch --clear-screen=false src/main.ts",
+    "build": "node ./build.mjs",
+    "start": "node dist/main.mjs",
+    "test": "vitest run --dir test",
+    "db:integrity": "tsx src/tools/integrity.ts",
+    "seed:demo": "tsx src/tools/seed-demo.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.1",
+    "@fastify/jwt": "^9.0.2",
+    "@fastify/rate-limit": "^10.2.1",
+    "@fastify/static": "^8.0.3",
+    "@lifementor/core": "*",
+    "fastify": "^5.2.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.2",
+    "tsx": "^4.19.2"
+  }
+}

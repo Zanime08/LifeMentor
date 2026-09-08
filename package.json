@@ -1,0 +1,39 @@
+{
+  "name": "lifementor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LifeMentor — AI Personal Development Operating System (Windows + Android, local-first SQLite, cloud sync)",
+  "workspaces": [
+    "packages/core",
+    "apps/server",
+    "apps/web"
+  ],
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm run dev --workspace @lifementor/server",
+    "dev:web": "npm run dev --workspace @lifementor/web",
+    "build": "npm run build --workspace @lifementor/core && npm run build --workspace @lifementor/server && npm run build --workspace @lifementor/web",
+    "start": "npm run start --workspace @lifementor/server",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:core": "vitest run --dir packages/core",
+    "test:server": "vitest run --dir apps/server",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "db:integrity": "npm run db:integrity --workspace @lifementor/server",
+    "seed:demo": "npm run seed:demo --workspace @lifementor/server",
+    "package:windows": "bash scripts/package-windows.sh",
+    "package:android": "bash scripts/package-android.sh",
+    "clean": "node scripts/clean.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "concurrently": "^9.1.0",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.8"
+  }
+}
