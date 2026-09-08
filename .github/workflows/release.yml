@@ -58,6 +58,22 @@ jobs:
         with:
           name: tauri-build-log
           path: apps/desktop/tauri-build.log
+      - name: Commit build log to arena/ci-logs (on failure)
+        if: failure()
+        shell: pwsh
+        run: |
+          if (Test-Path apps/desktop/tauri-build.log) {
+            Copy-Item apps/desktop/tauri-build.log ci-failure.log
+          } else {
+            Set-Content -Path ci-failure.log -Value 'tauri-build.log not found'
+          }
+          "=== repo permissions for GITHUB_TOKEN ===" | Add-Content ci-failure.log
+          gh api repos/$env:GITHUB_REPOSITORY --jq '.permissions' | Add-Content ci-failure.log
+          git config user.email "github-actions@github.com"
+          git config user.name "github-actions[bot]"
+          git add ci-failure.log
+          git commit -m "ci: windows build failure log"
+          git push -f origin HEAD:arena/ci-logs || echo "PUSH TO arena/ci-logs FAILED (likely no contents:write)"
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
