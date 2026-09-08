@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import webpush from 'web-push';
 import { createLogger } from '@lifementor/core';
+import type { FcmClient } from './fcm';
 import type { ServerDb } from '../db';
 import type { ServerConfig } from '../config';
 
@@ -8,10 +9,13 @@ import type { ServerConfig } from '../config';
  * Push notifications (docs/08 §5).
  *
  * Delivery paths:
- *  - **Web Push** (primary here): the server pushes to the browser's service worker via VAPID;
+ *  - **Web Push** (browsers): the server pushes to the tab's service worker via VAPID;
+ *  - **FCM v1** (Android, docs/11 §8): urgent notifications carry a visible notification
+ *    payload (the OS shows them even with the app closed); non-urgent ones are data-only and
+ *    are shown by the app's local gate when it is next in the foreground;
  *  - **polling fallback** (guaranteed): every notification is stored in a per-user queue, and the
  *    client pulls `GET /v1/notifications/pending` on each foreground — so a notification survives
- *    a closed tab, a dead network at push time, and (later) FCM tokens for Android.
+ *    a closed app, a dead network at push time, and a server without FCM configured.
  *
  * The client remains the final gate (budget / quiet hours / per-type switches, req. 86); the
  * server only guarantees the notification *arrives*, and applies a hard daily cap for
@@ -62,7 +66,12 @@ interface PushSubscriptionRow {
 export class PushService {
   private readonly log = createLogger('notification');
 
-  constructor(private readonly db: ServerDb, private readonly config: ServerConfig['push']) {
+  constructor(
+    private readonly db: ServerDb,
+    private readonly config: ServerConfig['push'],
+    /** FCM transport (Android); null when no Firebase service account is configured. */
+    private readonly fcm: FcmClient | null = null,
+  ) {
     if (config.vapidPublicKey && config.vapidPrivateKey) {
       webpush.setVapidDetails(config.vapidSubject, config.vapidPublicKey, config.vapidPrivateKey);
     }
@@ -159,10 +168,20 @@ export class PushService {
     const now = new Date().toISOString();
 
     for (const sub of subs) {
-      if (sub.kind !== 'web') {
-        // FCM transport activates with the Android shell; until then the notification stays in
-        // the queue and is delivered via polling (honest, not faked).
-        lastError = lastError ?? 'fcm transport not enabled yet (Android shell pending) — will be delivered by polling';
+      if (sub.kind === 'fcm') {
+        const result = await this.deliverFcm(sub, n, now);
+        if (result.delivered) {
+          delivered = true;
+          // An urgent (visible) FCM message accepted by FCM is shown by the OS even with the
+          // app closed — mark it delivered so the polling fallback doesn't show it a second
+          // time. Data-only messages are NOT marked: the app's local gate shows them on the
+          // next foreground, which is what `pollPendingNotifications` picks up there.
+          if (n.urgent === 1) {
+            await this.db.run(`UPDATE notifications SET delivered_at = ? WHERE id = ?`, [now, n.id]);
+          }
+        } else {
+          lastError = lastError ?? result.error;
+        }
         continue;
       }
       if (!sub.p256dh || !sub.auth_secret) {
@@ -202,9 +221,59 @@ export class PushService {
       await this.db.run(`UPDATE notifications SET push_sent_at = ? WHERE id = ?`, [pushSentAt, n.id]);
       return ['sent', undefined];
     }
-    const error = lastError ?? 'no web subscription';
+    const error = lastError ?? 'no subscriptions';
     await this.db.run(`UPDATE notifications SET push_sent_at = ?, push_error = ? WHERE id = ?`, [pushSentAt, error, n.id]);
     return ['failed', error];
+  }
+
+  /**
+   * FCM delivery for one Android subscription. On a dead token (404 / UNREGISTERED) the
+   * subscription is dropped — the device will register a fresh token on next start.
+   * When FCM is not configured the honest reason goes into `push_error`, and the polling
+   * fallback still delivers the notification.
+   */
+  private async deliverFcm(
+    sub: PushSubscriptionRow,
+    n: ServerNotification,
+    now: string,
+  ): Promise<{ delivered: boolean; error?: string }> {
+    if (!this.fcm || !this.fcm.enabled) {
+      return {
+        delivered: false,
+        error: 'fcm transport not enabled on this server (FIREBASE_SERVICE_ACCOUNT_FILE is not set) — will be delivered by polling',
+      };
+    }
+    try {
+      const data: Record<string, string> = { id: n.id, type: n.type };
+      if (n.url) data.url = n.url;
+      if (n.data) {
+        const parsed = JSON.parse(n.data) as Record<string, unknown>;
+        for (const [key, value] of Object.entries(parsed)) {
+          if (typeof value === 'string') data[key] = value; // FCM data values must be strings
+        }
+      }
+      const result = await this.fcm.send(sub.endpoint, {
+        title: n.title,
+        body: n.body ?? undefined,
+        data,
+        urgent: n.urgent === 1,
+      });
+      if (result.ok) {
+        await this.db.run(`UPDATE push_subscriptions SET last_error = NULL, updated_at = ? WHERE id = ?`, [now, sub.id]);
+        return { delivered: true };
+      }
+      if (result.gone) {
+        await this.db.run(`DELETE FROM push_subscriptions WHERE id = ?`, [sub.id]);
+        return { delivered: false, error: 'fcm token expired (subscription removed)' };
+      }
+      const message = result.error ?? `fcm responded ${result.status}`;
+      await this.db.run(`UPDATE push_subscriptions SET last_error = ?, updated_at = ? WHERE id = ?`, [message.slice(0, 500), now, sub.id]);
+      return { delivered: false, error: message };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.db.run(`UPDATE push_subscriptions SET last_error = ?, updated_at = ? WHERE id = ?`, [message.slice(0, 500), now, sub.id]);
+      return { delivered: false, error: message };
+    }
   }
 
   // ─────────────────────────── polling fallback ───────────────────────────

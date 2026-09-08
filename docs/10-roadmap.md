@@ -25,21 +25,22 @@ that exposes it is tracked separately, because a service without a screen is not
 | 12 | Learning engine + spaced repetition + skills + assessments | ✅ done — service + Learning/Skills/Knowledge screens |
 | 13 | Progress snapshots + weekly/monthly reviews + strategy | ✅ done — service + Progress screen (daily snapshots, charts, reviews) + Strategy |
 | 14 | News engine | ✅ done — client service (sources/items/relevance/digest) + **server RSS poller**: 8 real feeds, 30-min polling, URL-hash dedup, urgency scoring, deterministic what/why/context enrichment, 60-day prune, honest empty/error states (no fake items). LLM-based enrichment: not connected (deterministic text instead). |
-| 15 | Notifications | ✅ **web push done** — client budget/quiet-hours/smart reminders + local scheduling; server: VAPID Web Push (subscribe/poll/deliver queue, urgent-news push with daily cap), service worker, polling fallback. **FCM transport activates with the Android shell** (tokens already accepted + queued, delivered by polling meanwhile). |
+| 15 | Notifications | ✅ **web push + FCM done** — client budget/quiet-hours/smart reminders + local scheduling; server: VAPID Web Push (subscribe/poll/deliver queue, urgent-news push with daily cap), **FCM v1 transport** (RS256 service-account JWT, token revocation, urgent = visible OS notification, data-only otherwise), service worker, polling fallback as the guaranteed path. Activation is external: a Firebase project for `ai.lifementor.app` + a server service account (docs/11 §FCM). |
 | 16 | Sync + offline (queue, incremental push/pull, conflicts) | ✅ done end to end — client engine, server API, two-device integration test |
 | 17 | Backup + restore + export/import + account deletion | ✅ done (local images, JSON archives, rotation, purge, **cloud backup slot**: client-side AES-GCM, server stores ciphertext + sha256, `POST/GET/DELETE /v1/backup`) |
-| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API) | ✅ 109 automated tests passing (16 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine + cloud backup) |
+| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API) | ✅ 118 automated tests passing (17 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + cloud backup) |
 | 19 | Packaging (Windows NSIS/MSI, Android APK, server release bundle) | 🟡 **one command away** — server bundles to `dist/main.mjs` and runs; shell projects + CI release workflow (`release.yml`: tests → NSIS .exe on windows-latest, APK on ubuntu-latest) are in place; the binaries are produced on a machine with Rust/JDK (or by tagging `v*`) — `docs/11-packaging.md` |
 | 20 | Polishing (UI density, empty states, error copy, perf, a11y) | ⬜ not started |
 
-**Test suite today:** 109 tests, 16 files — `packages/core/test` (public API, persistence + WASM
+**Test suite today:** 118 tests, 17 files — `packages/core/test` (public API, persistence + WASM
 driver durability, **Tauri and Capacitor driver contracts — the exact `sql_*` invoke shapes and
 v8 plugin API the shells implement, run against emulated Rust/Android engines**, sync/backup/
 recovery, auth, AI, onboarding), `apps/server/test` (auth API, sync API, AI gateway, news engine,
-push engine — delivery, polling fallback, 410 handling, FCM pending, urgent-news cap — cloud
-backup — and a two-device end-to-end run over real HTTP) and `apps/web/test` (browser bootstrap:
-the exact WASM + IndexedDB path the preview uses, including first-launch backup, offline AI
-degradation, offline sync, and data surviving a full restart).
+push engine — delivery, polling fallback, 410 handling, **FCM v1 (JWT signature, token exchange
++ caching, message shape, 404→drop, 401→re-exchange, end-to-end urgent/data-only delivery)**,
+urgent-news cap — cloud backup — and a two-device end-to-end run over real HTTP) and
+`apps/web/test` (browser bootstrap: the exact WASM + IndexedDB path the preview uses, including
+first-launch backup, offline AI degradation, offline sync, and data surviving a full restart).
 
 ## What is deliberately NOT built yet
 
@@ -47,10 +48,12 @@ degradation, offline sync, and data surviving a full restart).
   projects, CI release workflow, icons, signing hooks); producing the binaries needs Rust
   (Windows) and the Android SDK (APK), which are release-machine / CI-tag concerns
   (`docs/11-packaging.md`).
-* **FCM transport** — Web Push is fully delivered (service worker + server VAPID push + polling
-  fallback). FCM registration tokens are already accepted and queued (`kind='fcm'`), but actual FCM
-  delivery activates together with the Android shell; until then those notifications are delivered
-  by polling with an honest `push_error` explaining why.
+* **FCM activation is an external credential, not code** — the full FCM path is implemented and
+  tested (server FCM v1 sender with service-account JWT + token revocation; Android
+  `@capacitor/push-notifications` + a native `LifeMentorFcmService` that shows the OS notification
+  when the app is closed). Turning it on needs a free Firebase project for `ai.lifementor.app`
+  (`google-services.json`) and a server service account — we cannot create those here. Without
+  them the app is honest: no FCM token, and every notification still arrives via polling.
 * **LLM-based news enrichment** — the server poller enriches with deterministic what/why/context
   text today; swapping in the AI gateway for per-item enrichment is a small addition.
 * **UI-level automated tests** (Playwright) — engine and API are covered; the 13 web screens are
@@ -59,12 +62,11 @@ degradation, offline sync, and data surviving a full restart).
 ## Next phases
 
 1. **Produce the binaries**: tag a `v*` (CI builds the NSIS `.exe` + APK) or run the one-command
-   builds on a machine with Rust / JDK (docs/11-packaging.md).
-2. **FCM transport** in the Android shell — server-initiated push to a closed app (tokens are
-   already accepted and queued; delivery is by polling meanwhile).
-3. **LLM-based news enrichment** — swap the deterministic what/why/context text for the AI
+   builds on a machine with Rust / JDK (docs/11-packaging.md). For FCM in the shipped APK, also
+   set the `GOOGLE_SERVICES_JSON_B64` repository secret and the server's `FIREBASE_*` env.
+2. **LLM-based news enrichment** — swap the deterministic what/why/context text for the AI
    gateway on the server poller (small, isolated change).
-4. **Polish & hardening**: a11y pass, empty states, error copy, performance, Playwright UI tests.
+3. **Polish & hardening**: a11y pass, empty states, error copy, performance, Playwright UI tests.
 
 ## Web UI — what is built (`apps/web`, React + Vite, runs as the dev preview)
 

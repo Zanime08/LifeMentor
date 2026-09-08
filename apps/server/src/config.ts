@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 /**
  * Server configuration (docs/08 §2, §3, §8).
@@ -52,6 +53,15 @@ const ConfigSchema = z.object({
   /** Max important-news pushes per user per day — a hard anti-spam cap (req. 86). */
   NEWS_PUSH_DAILY_CAP: numberish(3),
 
+  // FCM (Android push, docs/08 §5 / docs/11 §8): Firebase service account that signs FCM v1
+  // API calls. Either point FIREBASE_SERVICE_ACCOUNT_FILE at the key JSON downloaded from the
+  // Firebase console, or set the three values separately. Unset → FCM is off and `fcm`
+  // subscriptions are still delivered by the polling path (honest push_error, never fake).
+  FIREBASE_SERVICE_ACCOUNT_FILE: z.string().optional(),
+  FIREBASE_PROJECT_ID: z.string().optional(),
+  FIREBASE_CLIENT_EMAIL: z.string().optional(),
+  FIREBASE_PRIVATE_KEY: z.string().optional(),
+
   // rate limits (per IP, per window)
   RATE_LIMIT_WINDOW_MS: numberish(60_000),
   RATE_LIMIT_AUTH: numberish(10),
@@ -91,6 +101,8 @@ export interface ServerConfig {
     vapidPublicGenerated: boolean;
     vapidSubject: string;
     newsDailyCap: number;
+    /** FCM (Android) credentials — null when no service account is configured (FCM off). */
+    fcm: { projectId: string; clientEmail: string; privateKey: string } | null;
   };
 }
 
@@ -141,6 +153,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     vapidGenerated = true;
   }
 
+  // FCM (Android): a Firebase service account signs FCM v1 calls. Optional — when absent the
+  // FCM transport is simply off and `fcm` subscriptions ride the polling path instead.
+  const fcm = parseFcm(raw, raw.NODE_ENV);
+
   return {
     env: raw.NODE_ENV,
     host: raw.HOST,
@@ -178,8 +194,61 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       vapidPublicGenerated: vapidGenerated,
       vapidSubject: raw.VAPID_SUBJECT,
       newsDailyCap: raw.NEWS_PUSH_DAILY_CAP,
+      fcm,
     },
   };
+}
+
+/**
+ * Assemble FCM credentials from the environment. Accepts either a service-account file
+ * (the JSON downloaded from the Firebase console) or the three values set individually.
+ * Returns null when nothing (or only part) is configured — in production a *partial*
+ * configuration is a hard error so a misconfigured deploy can't silently ship an app whose
+ * Android push never works.
+ */
+function parseFcm(
+  raw: {
+    FIREBASE_SERVICE_ACCOUNT_FILE?: string;
+    FIREBASE_PROJECT_ID?: string;
+    FIREBASE_CLIENT_EMAIL?: string;
+    FIREBASE_PRIVATE_KEY?: string;
+  },
+  nodeEnv: string,
+): { projectId: string; clientEmail: string; privateKey: string } | null {
+  let projectId = raw.FIREBASE_PROJECT_ID?.trim() ?? '';
+  let clientEmail = raw.FIREBASE_CLIENT_EMAIL?.trim() ?? '';
+  // PEM keys arrive with literal "\n" escapes when set through most env files — unescape them.
+  let privateKey = (raw.FIREBASE_PRIVATE_KEY ?? '').replace(/\\n/g, '\n').trim();
+
+  if (raw.FIREBASE_SERVICE_ACCOUNT_FILE) {
+    let parsed: { project_id?: string; client_email?: string; private_key?: string };
+    try {
+      parsed = JSON.parse(readFileSync(raw.FIREBASE_SERVICE_ACCOUNT_FILE, 'utf8'));
+    } catch (error) {
+      throw new ConfigError(
+        `FIREBASE_SERVICE_ACCOUNT_FILE is not readable JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    projectId = projectId || (parsed.project_id ?? '').trim();
+    clientEmail = clientEmail || (parsed.client_email ?? '').trim();
+    privateKey = privateKey || (parsed.private_key ?? '').trim();
+  }
+
+  const set = [projectId, clientEmail, privateKey];
+  if (!set.some(Boolean)) return null; // nothing configured → FCM off
+
+  if (!projectId || !clientEmail || !privateKey || !/BEGIN [A-Z ]*PRIVATE KEY/.test(privateKey)) {
+    if (nodeEnv === 'production') {
+      throw new ConfigError(
+        'FCM configuration is incomplete: set FIREBASE_SERVICE_ACCOUNT_FILE or all of '
+        + 'FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY.',
+      );
+    }
+    // development/test: treat a partial/malformed key as "FCM off" — the client keeps the
+    // honest polling fallback instead of the server crashing over an optional transport.
+    return null;
+  }
+  return { projectId, clientEmail, privateKey };
 }
 
 /** True when at least one cloud provider key is configured. */

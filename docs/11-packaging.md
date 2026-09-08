@@ -88,12 +88,45 @@ Release signing: create a keystore (`keytool -genkeypair -v -keystore lifementor
 Development: `cd apps/mobile && npx cap run android` (build + install + run on a connected
 device) or Android Studio → open `apps/mobile/android`.
 
+### FCM (remote push to a closed Android app)
+
+FCM is **opt-in and degrades honestly**: without a Firebase project the app builds and works
+exactly as before — the device just never gets an FCM token, and notifications arrive via the
+polling fallback (`GET /v1/notifications/pending`), as always.
+
+To enable it:
+
+1. **Firebase** (one time, free tier): console → create a project → *Project settings → Your
+   apps → Add app → Android*, package name `ai.lifementor.app` → download
+   `google-services.json` → place it at `apps/mobile/android/app/google-services.json`
+   (template: `google-services.example.json`). The Android build picks it up automatically —
+   the google-services gradle plugin is applied only when the file exists.
+2. **Server** (so it can send): set one of in the environment —
+   * `FIREBASE_SERVICE_ACCOUNT_FILE=/path/to/service-account.json` (recommended), or
+   * `FIREBASE_PROJECT_ID` + `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY`
+   (the private key is the `private_key` field of the service-account JSON; unescaped newlines
+   or literal `\n` both work). Create the key under *IAM & admin → Service accounts →
+   Firebase AdminSDK* (any project role that includes Cloud Messaging).
+3. Rebuild the APK and restart the server. That's all — the Android shell registers its FCM
+   token on start (`POST /v1/notifications/push-token`, `kind: 'fcm'`) and the server delivers
+   through the FCM v1 API (`services/fcm.ts`: RS256 service-account JWT → OAuth2 token →
+   `messages:send`).
+
+Delivery semantics (docs/08 §5): **urgent** notifications carry a visible notification
+payload, so the OS shows them even with the app closed (and the server marks them delivered —
+no double show); everything else is data-only and is shown by the app's local gate (budget /
+quiet hours, req. 86) on the next foreground, same path as polling. Dead tokens (FCM 404 /
+UNREGISTERED) are removed server-side automatically; the device re-registers on next start.
+
 ### CI
 
 `.github/workflows/release.yml` (on tag `v*` or manually): runs the test suite, builds the
 NSIS installer on `windows-latest` (Rust cached) and the APK on `ubuntu-latest`
 (JDK 17), uploads both as artifacts. Release APK signing is enabled when the repository has
-the `ANDROID_KEYSTORE_B64`/`ANDROID_KEY_ALIAS` variables and the matching secrets.
+the `ANDROID_KEYSTORE_B64`/`ANDROID_KEY_ALIAS` variables and the matching secrets. FCM is
+enabled in the CI-built APK when the repository has the `GOOGLE_SERVICES_JSON_B64` secret
+(base64 of `google-services.json`) — otherwise the APK ships with the polling fallback, as
+above.
 
 ## Icons
 
@@ -105,9 +138,13 @@ assets/app-icon-1024.png` (from `apps/desktop/src-tauri`) regenerates the full W
 ## Known limitations (honest list)
 
 * **Remote push**: Web Push works in the browser preview. In the shells, scheduled reminders
-  are OS-level (fire even with the app closed). *Server-initiated* push to a closed
-  Android app needs FCM (tokens are already accepted/queued server-side; delivery is by
-  polling until the FCM plugin is wired) — documented as the next integration.
+  are OS-level (fire even with the app closed). *Server-initiated* push to a closed Android
+  app uses FCM (server FCM v1 transport + the `@capacitor/push-notifications` plugin and a
+  native `LifeMentorFcmService`) — see "FCM" above. Without a Firebase project configured it
+  degrades to the polling fallback, which still delivers every notification.
+* **FCM requires a Firebase project** (free) for package `ai.lifementor.app`, plus a server
+  service account — both are external credentials we cannot generate in this repo; the code
+  path is complete and tested with mocks, and the app is honest about the unconfigured state.
 * **Secure store** is a JSON file in the OS app-data area (outside the webview, scoped to the
   user profile). Hardening to the OS keychain/keyring is a documented follow-up.
 * The Windows shell uses `currentUser` NSIS install mode (no admin elevation required).

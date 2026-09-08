@@ -78,6 +78,12 @@ jobs:
           distribution: temurin
           java-version: '17'
       - run: npm ci
+      # FCM: drop the Firebase project config in place when the secret is provided
+      # (docs/11 §FCM). Without it the APK still builds — push rides the polling fallback.
+      - name: Configure FCM (google-services.json)
+        if: ${{ secrets.GOOGLE_SERVICES_JSON_B64 != '' }}
+        working-directory: apps/mobile/android/app
+        run: echo "${{ secrets.GOOGLE_SERVICES_JSON_B64 }}" | base64 -d > google-services.json
       # web build + cap sync android (the one-command local flow).
       - name: Build web bundle & sync Capacitor
         run: npm run shell:android

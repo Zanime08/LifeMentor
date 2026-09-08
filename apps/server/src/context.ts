@@ -7,6 +7,7 @@ import { SyncStore } from './services/sync-store';
 import { TokenService, type JwtSigner } from './services/tokens';
 import { UserStore } from './services/users';
 import { NewsFeedService } from './services/news-feed';
+import { FcmClient } from './services/fcm';
 import { PushService } from './services/push';
 import { CloudBackupStore } from './services/cloud-backup';
 
@@ -63,7 +64,10 @@ export async function createContext(config: ServerConfig, overrides: ContextOver
   const news = new NewsFeedService(db, config.env === 'test' ? Number.MAX_SAFE_INTEGER : 30 * 60_000);
   if (config.env !== 'test') void news.start();
 
-  const push = new PushService(db, config.push);
+  // FCM transport (Android, docs/11 §8): enabled only when a Firebase service account is
+  // configured; otherwise the polling fallback still delivers `fcm` subscriptions.
+  const fcm = new FcmClient(config.push.fcm);
+  const push = new PushService(db, config.push, fcm);
   const cloudBackup = new CloudBackupStore(db);
 
   // Server-initiated push (docs/08 §5): when the poller finds new urgent items, notify every

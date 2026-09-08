@@ -118,6 +118,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => { stop = true; window.removeEventListener('focus', poll); window.clearInterval(timer); };
   }, [app]);
 
+  // ── FCM (Android shell, docs/08 §5 / docs/11 §8) ──────────────────────
+  // The native half of push: register the device's FCM token with the server and pull the
+  // queue the moment a message arrives in the foreground. The shell module (and the
+  // Capacitor plugins inside it) is loaded only inside the Android webview.
+  const onFcmArrival = useCallback(async () => {
+    try {
+      if (!app) return;
+      const { shown } = await pollPendingNotifications(app);
+      if (shown > 0) setVersion((v) => v + 1);
+    } catch { /* offline — the 60s poll retries */ }
+  }, [app]);
+
+  useEffect(() => {
+    const g = globalThis as Record<string, unknown>;
+    if (!app || g.Capacitor === undefined) return;
+    void import('../shells/fcm')
+      .then((m) => m.initFcm(app, () => void onFcmArrival()))
+      .catch(() => undefined);
+  }, [app, auth?.authenticated, onFcmArrival]);
+
   const mutate = useCallback(async <T,>(fn: () => Promise<T>, okText?: string): Promise<T | null> => {
     try {
       const result = await fn();

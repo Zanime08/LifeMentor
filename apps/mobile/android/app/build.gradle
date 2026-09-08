@@ -39,6 +39,14 @@ android {
     }
 }
 
+// FCM (docs/11 §8): Firebase is enabled only when the project's google-services.json is in
+// place (copy google-services.example.json → google-services.json and fill it from the
+// Firebase console for package ai.lifementor.app). Without it the app still builds and runs
+// — FCM token registration simply fails, and notifications arrive via the polling fallback.
+if (file('google-services.json').exists()) {
+    apply plugin: 'com.google.gms.google-services'
+}
+
 repositories {
     flatDir{
         dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
