@@ -16,7 +16,7 @@ that exposes it is tracked separately, because a service without a screen is not
 | 3 | Repository structure (monorepo, workspaces, configs) | ✅ done |
 | 4 | Database: schema, migrations, drivers, repositories, crash-safe persistence | ✅ done (26 tables, node + wasm drivers, WAL, transactional writes) |
 | 5 | Authentication: local session + server auth (scrypt, JWT, refresh rotation, devices) | ✅ done (`apps/server` + `AuthService`, 19 tests) |
-| 6 | Windows + Android shell (Tauri `src-tauri`, Capacitor project, SQL adapters) | 🟡 **partial** — the SQL adapter bridges exist (`platform/tauri`, `platform/capacitor`); the shell projects themselves are not created yet |
+| 6 | Windows + Android shell (Tauri `src-tauri`, Capacitor project, SQL adapters) | ✅ **projects ready** — `apps/desktop/src-tauri` (rusqlite, full `sql_*` invoke contract, NSIS bundle, capabilities, icons) + `apps/mobile` (Capacitor 8, `android/` Gradle project, notification permissions, icons) + shell platform adapters (store/preferences, native-scheduling notifications, dialog/fs, network). Both driver contracts pinned by CI tests (Rust/Android emulators). Binary builds need Rust/JDK — one command on a release machine / tag build (`docs/11-packaging.md`). |
 | 7 | Onboarding: questionnaire + adaptive interview + user-model builder | ✅ done — service (10 tests) + two-stage web wizard (questionnaire → adaptive interview → profile review → confirm) |
 | 8 | Profile + long-term memory + privacy controls | ✅ done — service + Memory Viewer UI ("What the AI knows about me": edit/delete/confirm) |
 | 9 | Goals + tasks + calendar + projects | ✅ done — services + Goals/Calendar/Projects screens |
@@ -28,22 +28,25 @@ that exposes it is tracked separately, because a service without a screen is not
 | 15 | Notifications | ✅ **web push done** — client budget/quiet-hours/smart reminders + local scheduling; server: VAPID Web Push (subscribe/poll/deliver queue, urgent-news push with daily cap), service worker, polling fallback. **FCM transport activates with the Android shell** (tokens already accepted + queued, delivered by polling meanwhile). |
 | 16 | Sync + offline (queue, incremental push/pull, conflicts) | ✅ done end to end — client engine, server API, two-device integration test |
 | 17 | Backup + restore + export/import + account deletion | ✅ done (local images, JSON archives, rotation, purge, **cloud backup slot**: client-side AES-GCM, server stores ciphertext + sha256, `POST/GET/DELETE /v1/backup`) |
-| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API) | ✅ 101 automated tests passing (14 files: core + server + WASM driver durability + browser bootstrap + push engine + cloud backup) |
-| 19 | Packaging (Windows NSIS/MSI, Android APK, server release bundle) | 🟡 **partial** — the server bundles to `dist/main.mjs` and runs; desktop/mobile packaging needs the shell projects (phase 6) and a machine with Rust/JDK |
+| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API) | ✅ 109 automated tests passing (16 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine + cloud backup) |
+| 19 | Packaging (Windows NSIS/MSI, Android APK, server release bundle) | 🟡 **one command away** — server bundles to `dist/main.mjs` and runs; shell projects + CI release workflow (`release.yml`: tests → NSIS .exe on windows-latest, APK on ubuntu-latest) are in place; the binaries are produced on a machine with Rust/JDK (or by tagging `v*`) — `docs/11-packaging.md` |
 | 20 | Polishing (UI density, empty states, error copy, perf, a11y) | ⬜ not started |
 
-**Test suite today:** 101 tests, 14 files — `packages/core/test` (public API, persistence + WASM
-driver durability, sync/backup/recovery, auth, AI, onboarding), `apps/server/test` (auth API,
-sync API, AI gateway, news engine, push engine — delivery, polling fallback, 410 handling, FCM
-pending, urgent-news cap — cloud backup — and a two-device end-to-end run over real HTTP) and
-`apps/web/test` (browser bootstrap: the exact WASM + IndexedDB path the preview uses, including
-first-launch backup, offline AI degradation, offline sync, and data surviving a full restart).
+**Test suite today:** 109 tests, 16 files — `packages/core/test` (public API, persistence + WASM
+driver durability, **Tauri and Capacitor driver contracts — the exact `sql_*` invoke shapes and
+v8 plugin API the shells implement, run against emulated Rust/Android engines**, sync/backup/
+recovery, auth, AI, onboarding), `apps/server/test` (auth API, sync API, AI gateway, news engine,
+push engine — delivery, polling fallback, 410 handling, FCM pending, urgent-news cap — cloud
+backup — and a two-device end-to-end run over real HTTP) and `apps/web/test` (browser bootstrap:
+the exact WASM + IndexedDB path the preview uses, including first-launch backup, offline AI
+degradation, offline sync, and data surviving a full restart).
 
 ## What is deliberately NOT built yet
 
-* **Desktop/mobile shell projects** (`src-tauri`, Capacitor `android/`), therefore no `.exe`/`.apk`.
-  The SQL adapter bridges exist (`platform/tauri`, `platform/capacitor`); binary builds additionally
-  require Rust and the Android SDK, which are release-machine concerns.
+* **The actual `.exe`/`.apk` binaries** — everything up to the compiler is in place (shell
+  projects, CI release workflow, icons, signing hooks); producing the binaries needs Rust
+  (Windows) and the Android SDK (APK), which are release-machine / CI-tag concerns
+  (`docs/11-packaging.md`).
 * **FCM transport** — Web Push is fully delivered (service worker + server VAPID push + polling
   fallback). FCM registration tokens are already accepted and queued (`kind='fcm'`), but actual FCM
   delivery activates together with the Android shell; until then those notifications are delivered
@@ -55,10 +58,13 @@ first-launch backup, offline AI degradation, offline sync, and data surviving a 
 
 ## Next phases
 
-1. **Desktop + mobile shells** (Tauri 2 / Capacitor) reusing the same UI bundle; the Android
-   shell also activates the FCM push transport (tokens are already accepted and queued).
-2. **Packaging**: NSIS installer, APK/AAB, server release bundle + install docs.
-3. **Polish & hardening**: a11y pass, empty states, error copy, performance, Playwright UI tests.
+1. **Produce the binaries**: tag a `v*` (CI builds the NSIS `.exe` + APK) or run the one-command
+   builds on a machine with Rust / JDK (docs/11-packaging.md).
+2. **FCM transport** in the Android shell — server-initiated push to a closed app (tokens are
+   already accepted and queued; delivery is by polling meanwhile).
+3. **LLM-based news enrichment** — swap the deterministic what/why/context text for the AI
+   gateway on the server poller (small, isolated change).
+4. **Polish & hardening**: a11y pass, empty states, error copy, performance, Playwright UI tests.
 
 ## Web UI — what is built (`apps/web`, React + Vite, runs as the dev preview)
 
@@ -83,9 +89,13 @@ npm run dev                 # both, in one terminal
 npm run build:server        # bundle → apps/server/dist/main.mjs
 npm start                   # run the bundle
 
-npm test                    # 95 tests (core + server + web bootstrap)
+npm test                    # 109 tests (core + server + shell driver contracts + web bootstrap)
 npm run typecheck           # tsc --noEmit over the whole monorepo
 npm run db:integrity        # server database diagnostics
+
+# Shells (release machine — see docs/11-packaging.md):
+npm run shell:android       # web build + cap sync android (then gradlew assembleRelease)
+npm run shell:windows       # tauri build → NSIS .exe (needs Rust)
 ```
 
 Environment: copy `.env.example`; `JWT_SECRET` is required in production, provider keys are

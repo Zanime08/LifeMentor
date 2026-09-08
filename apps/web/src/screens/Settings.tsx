@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { FieldDiff, LifeMentorApp, SyncConflict } from '@lifementor/core';
 import { Btn, Card, Confirm, Field, I, Modal, PageHead, Select, Spinner, Tag, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
+import { SERVER_URL_STORAGE_KEY } from '../core/app';
 import { disablePush, enablePush, getPushState, sendTestPush } from '../push';
 import { cloudBackupStatus, deleteCloudBackup, downloadCloudBackup, uploadCloudBackup, type CloudBackupStatus } from '../cloud-backup';
 import { timeAgo } from '../lib/ru';
@@ -49,6 +50,7 @@ function SyncTab() {
   const [conflicts, setConflicts] = useState<(SyncConflict & { local: Record<string, unknown>; remote: Record<string, unknown>; diff: FieldDiff[] })[]>([]);
   const [resolveFor, setResolveFor] = useState<(typeof conflicts)[number] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [serverDraft, setServerDraft] = useState<string>(() => (typeof localStorage !== 'undefined' ? localStorage.getItem(SERVER_URL_STORAGE_KEY) ?? '' : ''));
 
   useEffect(() => {
     if (!app?.services.sync) return;
@@ -95,6 +97,29 @@ function SyncTab() {
 
       <Card title="Синхронизация" sub="Локальная база — источник истины. Синхронизация инкрементальная, по версиям сущностей."
         action={syncStatus ? <Tag tone={syncStatus.pending > 0 ? 'p1' : 'green'}>{syncStatus.pending} в очереди</Tag> : undefined}>
+        <div className="field mb-sm">
+          <label>Сервер LifeMentor (https://…)</label>
+          <div className="row wrap" style={{ gap: 8 }}>
+            <TextInput
+              placeholder="Оставьте пустым для этого устройства (превью / локально)"
+              value={serverDraft}
+              onChange={(e) => setServerDraft(e.target.value)}
+              style={{ flex: 1, minWidth: 220 }}
+            />
+            <Btn size="sm" kind="primary" onClick={() => {
+              const v = serverDraft.trim().replace(/\/+$/, '');
+              try {
+                if (v) localStorage.setItem(SERVER_URL_STORAGE_KEY, v);
+                else localStorage.removeItem(SERVER_URL_STORAGE_KEY);
+              } catch { /* ignore */ }
+              window.location.reload();
+            }}>{serverDraft.trim() ? 'Сохранить и перезапустить' : 'Сбросить адрес'}</Btn>
+          </div>
+          <p className="xsmall muted" style={{ marginTop: 4 }}>
+            Адрес сервера, где хранятся ваш аккаунт, синхронизация, новости и облачный ИИ.
+            Ключи ИИ остаются только на сервере. Изменение применяется после перезапуска.
+          </p>
+        </div>
         {!auth?.authenticated && <div className="small muted mb-sm">Войдите в аккаунт, чтобы включить синхронизацию.</div>}
         {auth?.authenticated && (
           <>

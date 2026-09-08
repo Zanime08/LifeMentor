@@ -7,7 +7,9 @@
   "workspaces": [
     "packages/core",
     "apps/server",
-    "apps/web"
+    "apps/web",
+    "apps/mobile",
+    "apps/desktop"
   ],
   "engines": {
     "node": ">=20.11"
@@ -25,6 +27,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
     "db:integrity": "npm run db:integrity --workspace @lifementor/server",
+    "shell:android": "npm run android --workspace @lifementor/mobile",
+    "shell:windows": "npm run build --workspace @lifementor/desktop",
     "clean": "node scripts/clean.mjs",
     "build:server": "npm run build --workspace @lifementor/server"
   },

@@ -36,17 +36,23 @@ apps/server/     LifeMentor Server (Fastify, порт 8787): auth (scrypt, JWT, 
                  облачная копия (шифртекст + sha256, сервер не может прочитать), health.
 apps/web/        Веб-приложение (React 18 + Vite): 13 экранов + Auth + двухэтапный onboarding.
                  В браузере — реальный SQLite в WebAssembly (sql.js), образ БД хранится в
-                 IndexedDB; auth/sync/AI/news идут через сервер.
+                 IndexedDB; auth/sync/AI/news идут через сервер. Тот же бандл работает внутри
+                 обоих шеллов (bootstrap сам определяет окружение).
+apps/desktop/    Windows-шелл (Tauri 2): src-tauri на Rust — rusqlite (WAL) на стороне ОС,
+                 нативное планирование уведомлений, NSIS-установщик. Сборка: `npm run shell:windows`.
+apps/mobile/     Android-шелл (Capacitor 8): android/ Gradle-проект, платформенный SQLite,
+                 системные уведомления (работают в фоне), Filesystem+Share для экспорта.
+                 Сборка: `npm run shell:android` + `gradlew assembleRelease`.
 docs/            Проектирование: продуктовая спецификация, выбор стека, архитектура, схема БД,
                  синхронизация, сбойностойкость, ИИ-оркестрация, планировщик, уведомления,
-                 MVP-состав, roadmap (docs/10-roadmap.md).
+                 упаковка/сборка (docs/11-packaging.md), MVP-состав, roadmap (docs/10-roadmap.md).
 ```
 
 ## Быстрый старт (для разработки)
 
 ```bash
-npm install            # зависимости (workspace: core, server, web)
-npm test               # 101 автотест (core + server + web bootstrap, включая e2e-синхронизацию, push и облачную копию)
+npm install            # зависимости (workspace: core, server, web, mobile, desktop)
+npm test               # 109 автотест (core + server + web bootstrap + контракты драйверов Tauri/Capacitor)
 
 npm run dev --workspace @lifementor/server   # API на :8787
 npm run dev --workspace @lifementor/web      # веб-приложение на :5173 (прокси /v1 → :8787)
@@ -91,8 +97,13 @@ npm run dev --workspace @lifementor/web      # веб-приложение на 
   дедлайны, обучение, прогресс, срочные новости).
 - Стратегия: слои (3–5 лет → год → квартал → сейчас), неизменяемая история изменений
   (старое/новое/причина/дата).
+- **Шеллы готовы к сборке**: один и тот же бандл в Windows (Tauri 2, нативный SQLite через
+  rusqlite, системные уведомления с планированием) и Android (Capacitor 8, платформенный
+  SQLite, фоновые системные уведомления). Контракты драйверов покрыты тестами. Сборка —
+  одна команда на машине с Rust/JDK или тегом `v*` в CI: `docs/11-packaging.md`.
 
 ## Что дальше
 
-См. `docs/10-roadmap.md`: шеллы Tauri/Capacitor → `.exe`/`.apk` (Android-шелл активирует FCM-push,
-токены уже принимаются и ждут в очереди), LLM-обогащение новостей, упаковка и полировка.
+См. `docs/10-roadmap.md`: собрать бинарники (тег `v*` в CI или одна команда на машине с
+Rust/JDK), FCM-push для закрытого Android-приложения (токены уже принимаются и ждут в
+очереди), LLM-обогащение новостей, полировка.
