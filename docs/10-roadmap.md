@@ -28,13 +28,15 @@ that exposes it is tracked separately, because a service without a screen is not
 | 15 | Notifications | 🟡 **partial** — budget, quiet hours, smart reminders and the local OS scheduling bridge are done; **server push (FCM / Web Push) is not built** |
 | 16 | Sync + offline (queue, incremental push/pull, conflicts) | ✅ done end to end — client engine, server API, two-device integration test |
 | 17 | Backup + restore + export/import + account deletion | ✅ done (local images, JSON archives, rotation, purge) |
-| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API) | ✅ 93 automated tests passing (11 files: core + server + WASM driver durability) |
+| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API) | ✅ 95 automated tests passing (12 files: core + server + WASM driver durability + browser bootstrap) |
 | 19 | Packaging (Windows NSIS/MSI, Android APK, server release bundle) | 🟡 **partial** — the server bundles to `dist/main.mjs` and runs; desktop/mobile packaging needs the shell projects (phase 6) and a machine with Rust/JDK |
 | 20 | Polishing (UI density, empty states, error copy, perf, a11y) | ⬜ not started |
 
-**Test suite today:** 93 tests, 11 files — `packages/core/test` (public API, persistence + WASM
-driver durability, sync/backup/recovery, auth, AI, onboarding) and `apps/server/test` (auth API,
-sync API, AI gateway, news engine, and a two-device end-to-end run over real HTTP).
+**Test suite today:** 95 tests, 12 files — `packages/core/test` (public API, persistence + WASM
+driver durability, sync/backup/recovery, auth, AI, onboarding), `apps/server/test` (auth API,
+sync API, AI gateway, news engine, and a two-device end-to-end run over real HTTP) and
+`apps/web/test` (browser bootstrap: the exact WASM + IndexedDB path the preview uses, including
+first-launch backup, offline AI degradation, offline sync, and data surviving a full restart).
 
 ## What is deliberately NOT built yet
 
@@ -72,12 +74,15 @@ Profile, and Settings (memory viewer, sync/backup/export-import, account deletio
 ```bash
 npm install
 
-# backend (Fastify + SQLite): auth, sync, AI gateway
+# backend (Fastify + SQLite): auth, sync, AI gateway, news poller
 npm run dev:server          # tsx watch, http://localhost:8787
+npm run dev:web             # web UI, http://localhost:5173 (proxies /v1 to the server)
+npm run dev                 # both, in one terminal
+
 npm run build:server        # bundle → apps/server/dist/main.mjs
 npm start                   # run the bundle
 
-npm test                    # 86 tests (core + server)
+npm test                    # 95 tests (core + server + web bootstrap)
 npm run typecheck           # tsc --noEmit over the whole monorepo
 npm run db:integrity        # server database diagnostics
 ```

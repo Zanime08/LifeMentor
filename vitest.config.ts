@@ -14,6 +14,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      // Longest prefix first: '@lifementor/core/wasm' must not fall through to the base alias.
+      '@lifementor/core/wasm': new URL('./packages/core/src/db/drivers/wasm.ts', import.meta.url).pathname,
       '@lifementor/core': new URL('./packages/core/src/index.ts', import.meta.url).pathname,
     },
   },
