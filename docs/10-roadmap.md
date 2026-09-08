@@ -27,17 +27,17 @@ that exposes it is tracked separately, because a service without a screen is not
 | 14 | News engine | ✅ done — client service (sources/items/relevance/digest) + **server RSS poller**: 8 real feeds, 30-min polling, URL-hash dedup, urgency scoring, deterministic what/why/context enrichment, 60-day prune, honest empty/error states (no fake items). LLM-based enrichment: not connected (deterministic text instead). |
 | 15 | Notifications | ✅ **web push done** — client budget/quiet-hours/smart reminders + local scheduling; server: VAPID Web Push (subscribe/poll/deliver queue, urgent-news push with daily cap), service worker, polling fallback. **FCM transport activates with the Android shell** (tokens already accepted + queued, delivered by polling meanwhile). |
 | 16 | Sync + offline (queue, incremental push/pull, conflicts) | ✅ done end to end — client engine, server API, two-device integration test |
-| 17 | Backup + restore + export/import + account deletion | ✅ done (local images, JSON archives, rotation, purge) |
-| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API) | ✅ 99 automated tests passing (13 files: core + server + WASM driver durability + browser bootstrap + push engine) |
+| 17 | Backup + restore + export/import + account deletion | ✅ done (local images, JSON archives, rotation, purge, **cloud backup slot**: client-side AES-GCM, server stores ciphertext + sha256, `POST/GET/DELETE /v1/backup`) |
+| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API) | ✅ 101 automated tests passing (14 files: core + server + WASM driver durability + browser bootstrap + push engine + cloud backup) |
 | 19 | Packaging (Windows NSIS/MSI, Android APK, server release bundle) | 🟡 **partial** — the server bundles to `dist/main.mjs` and runs; desktop/mobile packaging needs the shell projects (phase 6) and a machine with Rust/JDK |
 | 20 | Polishing (UI density, empty states, error copy, perf, a11y) | ⬜ not started |
 
-**Test suite today:** 99 tests, 13 files — `packages/core/test` (public API, persistence + WASM
+**Test suite today:** 101 tests, 14 files — `packages/core/test` (public API, persistence + WASM
 driver durability, sync/backup/recovery, auth, AI, onboarding), `apps/server/test` (auth API,
 sync API, AI gateway, news engine, push engine — delivery, polling fallback, 410 handling, FCM
-pending, urgent-news cap — and a two-device end-to-end run over real HTTP) and `apps/web/test`
-(browser bootstrap: the exact WASM + IndexedDB path the preview uses, including first-launch
-backup, offline AI degradation, offline sync, and data surviving a full restart).
+pending, urgent-news cap — cloud backup — and a two-device end-to-end run over real HTTP) and
+`apps/web/test` (browser bootstrap: the exact WASM + IndexedDB path the preview uses, including
+first-launch backup, offline AI degradation, offline sync, and data surviving a full restart).
 
 ## What is deliberately NOT built yet
 
@@ -50,8 +50,6 @@ backup, offline AI degradation, offline sync, and data surviving a full restart)
   by polling with an honest `push_error` explaining why.
 * **LLM-based news enrichment** — the server poller enriches with deterministic what/why/context
   text today; swapping in the AI gateway for per-item enrichment is a small addition.
-* **Cloud backup storage** (`POST /v1/backup`): local backups, exports and restore are complete;
-  uploading an encrypted blob to the server is not implemented.
 * **UI-level automated tests** (Playwright) — engine and API are covered; the 13 web screens are
   exercised manually against the running dev preview.
 
@@ -59,9 +57,8 @@ backup, offline AI degradation, offline sync, and data surviving a full restart)
 
 1. **Desktop + mobile shells** (Tauri 2 / Capacitor) reusing the same UI bundle; the Android
    shell also activates the FCM push transport (tokens are already accepted and queued).
-2. **Cloud backup upload** (`POST /v1/backup`, encrypted blob).
-3. **Packaging**: NSIS installer, APK/AAB, server release bundle + install docs.
-4. **Polish & hardening**: a11y pass, empty states, error copy, performance, Playwright UI tests.
+2. **Packaging**: NSIS installer, APK/AAB, server release bundle + install docs.
+3. **Polish & hardening**: a11y pass, empty states, error copy, performance, Playwright UI tests.
 
 ## Web UI — what is built (`apps/web`, React + Vite, runs as the dev preview)
 

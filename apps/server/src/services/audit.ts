@@ -13,6 +13,7 @@ export type AuditEvent =
   | 'password_changed' | 'account_deleted' | 'device_revoked'
   | 'sync_push' | 'sync_pull' | 'sync_conflict'
   | 'push_test'
+  | 'backup_uploaded' | 'backup_downloaded' | 'backup_deleted'
   | 'ai_request' | 'ai_budget_exceeded' | 'ai_error';
 
 export interface AuditEntryInput {

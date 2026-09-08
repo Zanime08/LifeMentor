@@ -8,6 +8,7 @@ import { TokenService, type JwtSigner } from './services/tokens';
 import { UserStore } from './services/users';
 import { NewsFeedService } from './services/news-feed';
 import { PushService } from './services/push';
+import { CloudBackupStore } from './services/cloud-backup';
 
 export const SERVER_NAME = 'lifementor-server';
 export const SERVER_VERSION = '0.1.0';
@@ -28,6 +29,7 @@ export interface ServerContext {
   ai: AiGateway;
   news: NewsFeedService;
   push: PushService;
+  cloudBackup: CloudBackupStore;
   version: string;
   close(): Promise<void>;
 }
@@ -62,6 +64,7 @@ export async function createContext(config: ServerConfig, overrides: ContextOver
   if (config.env !== 'test') void news.start();
 
   const push = new PushService(db, config.push);
+  const cloudBackup = new CloudBackupStore(db);
 
   // Server-initiated push (docs/08 §5): when the poller finds new urgent items, notify every
   // subscribed user within the daily cap.
@@ -75,7 +78,7 @@ export async function createContext(config: ServerConfig, overrides: ContextOver
     .catch(() => undefined);
 
   return {
-    config, db, audit, users, tokens, sync, ai, news, push, version: SERVER_VERSION,
+    config, db, audit, users, tokens, sync, ai, news, push, cloudBackup, version: SERVER_VERSION,
     async close(): Promise<void> {
       news.stop();
       await db.close();

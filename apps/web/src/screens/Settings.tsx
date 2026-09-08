@@ -4,6 +4,7 @@ import type { FieldDiff, LifeMentorApp, SyncConflict } from '@lifementor/core';
 import { Btn, Card, Confirm, Field, I, Modal, PageHead, Select, Spinner, Tag, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
 import { disablePush, enablePush, getPushState, sendTestPush } from '../push';
+import { cloudBackupStatus, deleteCloudBackup, downloadCloudBackup, uploadCloudBackup, type CloudBackupStatus } from '../cloud-backup';
 import { timeAgo } from '../lib/ru';
 
 type Health = Awaited<ReturnType<LifeMentorApp['health']>>;
@@ -163,15 +164,29 @@ function SyncTab() {
 
 /* ── data & backups ─────────────────────────────────────────────────── */
 function DataTab() {
-  const { app, mutate, toast, hardReset } = useApp();
+  const { app, mutate, toast, hardReset, auth } = useApp();
   const [backups, setBackups] = useState<Awaited<ReturnType<import('@lifementor/core').BackupService['list']>>>([]);
   const [importPreview, setImportPreview] = useState<{ name: string; data: string } | null>(null);
   const [exportFirst, setExportFirst] = useState(true);
   const [deleting, setDeleting] = useState(false);
+  const [cloud, setCloud] = useState<CloudBackupStatus | null>(null);
+  const [cloudBusy, setCloudBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const loadBackups = () => { if (app) void app.services.backup.list().then(setBackups).catch(() => undefined); };
   useEffect(loadBackups, [app]);
+
+  // Cloud backup status (metadata only — the ciphertext never touches the UI).
+  const loadCloud = useCallback(() => {
+    if (!app || !auth?.authenticated) { setCloud({ exists: false }); return; }
+    void cloudBackupStatus(app).then(setCloud).catch(() => setCloud(null));
+  }, [app, auth?.authenticated]);
+  useEffect(loadCloud, [loadCloud]);
+
+  const runCloud = async (fn: () => Promise<void>) => {
+    setCloudBusy(true);
+    try { await fn(); loadCloud(); } finally { setCloudBusy(false); }
+  };
 
   const doExport = async () => {
     if (!app) return;
@@ -252,6 +267,41 @@ function DataTab() {
             </div>
           </div>
         )}
+      </Card>
+
+      <Card title="Облачная копия" sub="Шифруется на устройстве (AES-GCM). Сервер хранит только шифртекст, который не может прочитать — плюс контрольную сумму для проверки целостности.">
+        <div className="row wrap" style={{ gap: 8, alignItems: 'center' }}>
+          {cloud === null && <span className="xsmall muted">не удалось получить статус сервера</span>}
+          {cloud?.exists && (
+            <span className="xsmall muted">
+              на сервере: {(cloud.size_bytes ?? 0) / 1024 / 1024 >= 1
+                ? `${((cloud.size_bytes ?? 0) / 1024 / 1024).toFixed(1)} МБ`
+                : `${Math.max(1, Math.round((cloud.size_bytes ?? 0) / 1024))} КБ`}
+              {' · '}создана {cloud.created_at ? new Date(cloud.created_at).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'}
+              {cloud.checksum ? ` · sha256 ${cloud.checksum.slice(0, 12)}…` : ''}
+            </span>
+          )}
+          {cloud && !cloud.exists && <span className="xsmall muted">облачной копии пока нет</span>}
+          <div style={{ flex: 1 }} />
+          <Btn size="sm" disabled={cloudBusy || !auth?.authenticated} onClick={() => void runCloud(async () => {
+            const meta = await uploadCloudBackup(app!);
+            toast(`Облачная копия загружена (${Math.max(1, Math.round(meta.size_bytes! / 1024))} КБ, шифртекст).`, 'ok');
+          })}>{I.cloud} Загрузить копию</Btn>
+          <Btn size="sm" disabled={cloudBusy || !cloud?.exists} onClick={() => void runCloud(async () => {
+            const { archive } = await downloadCloudBackup(app!);
+            setImportPreview({ name: 'облачная копия (расшифрована)', data: JSON.stringify(archive) });
+            toast('Копия расшифрована и проверена. Выберите режим импорта ниже.', 'ok');
+          })}>Скачать и импортировать</Btn>
+          <Btn size="sm" kind="danger" disabled={cloudBusy || !cloud?.exists} onClick={() => void runCloud(async () => {
+            await deleteCloudBackup(app!);
+            toast('Облачная копия удалена с сервера.', 'warn');
+          })}>Удалить с сервера</Btn>
+        </div>
+        <p className="xsmall muted" style={{ marginTop: 8 }}>
+          Ключ шифрования хранится в этом браузере (в десктопной/мобильной сборке — в хранилище ОС).
+          Если хранилище будет очищено, облачная копия станет невосстановимой — локальные копии и экспорт
+          работают независимо.
+        </p>
       </Card>
 
       <Card title="Удаление аккаунта и данных" sub="Безвозвратно. Перед удалением можно создать экспорт."

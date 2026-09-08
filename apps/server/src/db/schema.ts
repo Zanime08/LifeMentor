@@ -181,4 +181,19 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_pending ON notifications(user_id, delivered_at, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_dedup ON notifications(user_id, dedup_key, created_at DESC);
+
+-- Cloud backup slot (docs/08 §1): ONE latest backup per user. The blob is ENCRYPTED ON THE
+-- CLIENT (AES-GCM, device key in OS secure storage / browser storage) — the server stores only
+-- ciphertext it cannot read, plus a checksum computed for integrity verification (req. 70).
+CREATE TABLE IF NOT EXISTS cloud_backups (
+  user_id      TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+  blob         BLOB NOT NULL,
+  size_bytes   INTEGER NOT NULL,
+  checksum     TEXT NOT NULL,          -- sha256 hex, verified on upload and download
+  format       TEXT,                   -- e.g. 'lifementor-archive/v1'
+  created_at   TEXT NOT NULL,          -- when the backup was made on the client
+  uploaded_at  TEXT NOT NULL,
+  device_id    TEXT,
+  note         TEXT
+);
 `;
