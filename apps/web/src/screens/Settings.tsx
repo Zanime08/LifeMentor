@@ -1,8 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { FieldDiff, LifeMentorApp, SyncConflict } from '@lifementor/core';
 import { Btn, Card, Confirm, Field, I, Modal, PageHead, Select, Spinner, Tag, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
+import { disablePush, enablePush, getPushState, sendTestPush } from '../push';
 import { timeAgo } from '../lib/ru';
 
 type Health = Awaited<ReturnType<LifeMentorApp['health']>>;
@@ -356,8 +357,72 @@ function NotificationsTab() {
         <Field label="до"><TextInput type="time" value={String(s.quiet_end ?? '07:30')} onChange={(e) => set('quiet_end', e.target.value)} style={{ width: 110 }} /></Field>
         <Field label="Дневной бюджет"><TextInput type="number" min={0} max={30} value={String(s.daily_budget)} onChange={(e) => set('daily_budget', Number(e.target.value) || 6)} style={{ width: 110 }} /></Field>
       </div>
+      <PushCard />
       <p className="xsmall muted">Каждое уведомление проходит фильтр: «это действительно нужно знать или сделать сейчас?»</p>
     </Card>
+  );
+}
+
+/** Web Push: подписка на системные уведомления (в т.ч. при закрытой вкладке) + диагностика. */
+function PushCard() {
+  const { app, auth, toast } = useApp();
+  const [state, setState] = useState<Awaited<ReturnType<typeof getPushState>> | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    if (app) setState(await getPushState(app));
+  }, [app]);
+  useEffect(() => { void load(); }, [load]);
+
+  if (!state) return null;
+  if (!state.supported) {
+    return (
+      <div className="proactive">
+        <b>Push-уведомления</b> — не поддерживаются в этом браузере ({state.reason}).
+        Внутри открытого приложения уведомления продолжают работать, а пока приложение закрыто —
+        накопятся и придут при следующем открытии.
+      </div>
+    );
+  }
+
+  const run = async (fn: () => Promise<{ ok: boolean; error?: string }>, okText: string) => {
+    setBusy(true);
+    const result = await fn();
+    setBusy(false);
+    if (result.ok) toast(okText, 'ok');
+    else toast(result.error ?? 'Не получилось включить push', 'error');
+    void load();
+  };
+
+  return (
+    <div className="proactive" style={{ marginTop: 10 }}>
+      <div className="row" style={{ alignItems: 'center', gap: 8 }}>
+        <b>Push-уведомления</b>
+        <Tag tone={state.permission === 'granted' && state.subscribed ? 'green' : state.permission === 'denied' ? 'red' : 'outline'}>
+          {state.permission === 'granted' && state.subscribed ? 'включены' : state.permission === 'denied' ? 'заблокированы браузером' : 'выключены'}
+        </Tag>
+        <div style={{ flex: 1 }} />
+        {state.permission === 'granted' && state.subscribed ? (
+          <Btn kind="ghost" size="sm" disabled={busy} onClick={() => void run(() => disablePush(app!), 'Push отключён')}>Отключить</Btn>
+        ) : state.permission !== 'denied' ? (
+          <Btn kind="primary" size="sm" disabled={busy || !app || !auth?.authenticated} onClick={() => void run(() => enablePush(app!), 'Push включён — проверьте системные уведомления')}>Включить push</Btn>
+        ) : null}
+        {state.permission === 'granted' && state.subscribed && (
+          <Btn kind="ghost" size="sm" disabled={busy || !app} onClick={() => void (async () => {
+            const result = await sendTestPush(app!);
+            if (result.ok && result.push === 'sent') toast('Тестовое уведомление отправлено', 'ok');
+            else if (result.ok && result.push === 'skipped') toast('Нет активных подписок — сначала включите push', 'warn');
+            else toast(result.error ?? 'Сервер не смог доставить уведомление', 'error');
+          })()}>Тест</Btn>
+        )}
+        {!auth?.authenticated && <span className="xsmall muted">нужен вход в аккаунт</span>}
+      </div>
+      <p className="xsmall muted" style={{ marginTop: 6 }}>
+        Работает, даже когда вкладка закрыта (Service Worker). Если push не дошёл — накопленное придёт
+        при следующем открытии приложения. Ключи подписки хранит сервер, а каждое уведомление всё равно
+        проходит ваш дневной бюджет и тихие часы.
+      </p>
+    </div>
   );
 }
 

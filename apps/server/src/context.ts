@@ -7,6 +7,7 @@ import { SyncStore } from './services/sync-store';
 import { TokenService, type JwtSigner } from './services/tokens';
 import { UserStore } from './services/users';
 import { NewsFeedService } from './services/news-feed';
+import { PushService } from './services/push';
 
 export const SERVER_NAME = 'lifementor-server';
 export const SERVER_VERSION = '0.1.0';
@@ -26,6 +27,7 @@ export interface ServerContext {
   sync: SyncStore;
   ai: AiGateway;
   news: NewsFeedService;
+  push: PushService;
   version: string;
   close(): Promise<void>;
 }
@@ -59,8 +61,21 @@ export async function createContext(config: ServerConfig, overrides: ContextOver
   const news = new NewsFeedService(db, config.env === 'test' ? Number.MAX_SAFE_INTEGER : 30 * 60_000);
   if (config.env !== 'test') void news.start();
 
+  const push = new PushService(db, config.push);
+
+  // Server-initiated push (docs/08 §5): when the poller finds new urgent items, notify every
+  // subscribed user within the daily cap.
+  news.onNewUrgent = (items) => push
+    .usersWithSubscriptions()
+    .then(async (userIds) => {
+      let total = 0;
+      for (const userId of userIds) total += await push.notifyUrgentNews(userId, items);
+      return total;
+    })
+    .catch(() => undefined);
+
   return {
-    config, db, audit, users, tokens, sync, ai, news, version: SERVER_VERSION,
+    config, db, audit, users, tokens, sync, ai, news, push, version: SERVER_VERSION,
     async close(): Promise<void> {
       news.stop();
       await db.close();

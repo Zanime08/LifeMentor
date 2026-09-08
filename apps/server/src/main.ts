@@ -26,6 +26,9 @@ async function main(): Promise<void> {
   if (!hasCloudAI(config)) {
     app.log.warn('No OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY — the AI gateway serves the local heuristic provider');
   }
+  if (config.push.vapidPublicGenerated) {
+    app.log.warn('VAPID key pair was generated for this run only — set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY so push subscriptions survive a restart (npm run vapid:keys)');
+  }
 
   const address = await app.listen({ host: config.host, port: config.port });
   app.log.info({ env: config.env, address }, 'LifeMentor server ready');

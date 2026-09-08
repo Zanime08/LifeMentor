@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { LifeMentorApp, AuthState, SyncStatusView, Notification } from '@lifementor/core';
 import { bootstrapApp, resetAppPromise, SERVER_URL } from '../core/app';
+import { pollPendingNotifications } from '../push';
 
 export interface Toast { id: number; text: string; kind: 'info' | 'error' | 'ok' | 'warn' }
 
@@ -97,6 +98,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const timer = window.setInterval(() => void tick(), 20_000);
     return () => { stop = true; window.clearInterval(timer); };
   }, [app, version]);
+
+  // ── server push: polling fallback (docs/08 §5) ─────────────────────
+  // The service worker handles Web Push while the tab is closed; while the tab is open we
+  // pull whatever the queue still holds — on every foreground and every minute. A no-op when
+  // signed out (no token) or offline (the queue retries on the next foreground).
+  useEffect(() => {
+    if (!app) return;
+    let stop = false;
+    const poll = async () => {
+      try {
+        const { shown } = await pollPendingNotifications(app);
+        if (!stop && shown > 0) setVersion((v) => v + 1); // new inbox items → refresh UI
+      } catch { /* offline or not signed in — retry on the next foreground */ }
+    };
+    void poll();
+    window.addEventListener('focus', poll);
+    const timer = window.setInterval(poll, 60_000);
+    return () => { stop = true; window.removeEventListener('focus', poll); window.clearInterval(timer); };
+  }, [app]);
 
   const mutate = useCallback(async <T,>(fn: () => Promise<T>, okText?: string): Promise<T | null> => {
     try {

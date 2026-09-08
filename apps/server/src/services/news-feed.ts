@@ -149,6 +149,13 @@ export class NewsFeedService {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
 
+  /**
+   * Hook for server-initiated push (docs/08 §5): called after a refresh that added urgent
+   * items, so the push layer can notify subscribed users within budget. Must never throw
+   * (a push failure must not break the news flow) — the caller still handles errors.
+   */
+  onNewUrgent: ((items: { url: string; title: string }[]) => Promise<unknown> | unknown) | null = null;
+
   constructor(private readonly db: ServerDb, private readonly intervalMs = 30 * 60_000) {}
 
   async start(): Promise<void> {
@@ -192,11 +199,13 @@ export class NewsFeedService {
       let failed = 0;
       let added = 0;
       let lastError: string | undefined;
+      const urgentAdded: { url: string; title: string }[] = [];
       for (const source of sources) {
         try {
-          const n = await this.fetchOne(source);
+          const { added: n, urgent } = await this.fetchOne(source);
           ok += 1;
           added += n;
+          urgentAdded.push(...urgent);
         } catch (error) {
           failed += 1;
           lastError = `${source.name}: ${error instanceof Error ? error.message : String(error)}`;
@@ -204,13 +213,22 @@ export class NewsFeedService {
         }
       }
       await this.prune(60);
+      // Server-initiated push for urgent items (docs/08 §5). Push problems are logged, never
+      // allowed to fail the news refresh itself.
+      if (urgentAdded.length && this.onNewUrgent) {
+        try {
+          await this.onNewUrgent(urgentAdded);
+        } catch (error) {
+          log.warn('urgent-news push hook failed', { error: error instanceof Error ? error.message : String(error) });
+        }
+      }
       return { ok, failed, added, error: failed ? lastError : undefined };
     } finally {
       this.running = false;
     }
   }
 
-  private async fetchOne(source: { id: string; url: string; category: string; kind: string; name: string }): Promise<number> {
+  private async fetchOne(source: { id: string; url: string; category: string; kind: string; name: string }): Promise<{ added: number; urgent: { url: string; title: string }[] }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15_000);
     let response: Response;
@@ -228,6 +246,7 @@ export class NewsFeedService {
     if (!parsed.length) throw new Error('no items parsed');
 
     let added = 0;
+    const urgent: { url: string; title: string }[] = [];
     for (const item of parsed) {
       const urlHash = hashUrl(item.url);
       const exists = await this.db.get('SELECT url_hash FROM news_cache WHERE url_hash = ?', [urlHash]);
@@ -246,12 +265,13 @@ export class NewsFeedService {
         ],
       );
       added += 1;
+      if (urgency === 'urgent') urgent.push({ url: item.url, title: item.title });
     }
     const etag = response.headers.get('etag') ?? null;
     await this.db.run('UPDATE news_sources SET last_fetched_at = ?, etag = ?, last_error = NULL WHERE id = ?', [
       new Date().toISOString(), etag, source.id,
     ]);
-    return added;
+    return { added, urgent };
   }
 
   private async prune(days: number): Promise<void> {

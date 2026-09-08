@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { randomBytes } from 'node:crypto';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 
 /**
  * Server configuration (docs/08 §2, §3, §8).
@@ -43,6 +43,15 @@ const ConfigSchema = z.object({
   AI_DAILY_TOKEN_BUDGET: numberish(400_000),
   AI_MAX_INPUT_CHARS: numberish(200_000),
 
+  // Web Push (docs/08 §5): VAPID key pair. In development a throwaway pair is generated
+  // per run (and the log says so); set stable keys for production so subscriptions survive
+  // a restart (generate: npm run vapid:keys --workspace @lifementor/server).
+  VAPID_PUBLIC_KEY: z.string().optional(),
+  VAPID_PRIVATE_KEY: z.string().optional(),
+  VAPID_SUBJECT: z.string().default('mailto:dev@lifementor.local'),
+  /** Max important-news pushes per user per day — a hard anti-spam cap (req. 86). */
+  NEWS_PUSH_DAILY_CAP: numberish(3),
+
   // rate limits (per IP, per window)
   RATE_LIMIT_WINDOW_MS: numberish(60_000),
   RATE_LIMIT_AUTH: numberish(10),
@@ -76,9 +85,29 @@ export interface ServerConfig {
     maxInputChars: number;
   };
   rateLimit: { windowMs: number; auth: number; sync: number; ai: number; general: number };
+  push: {
+    vapidPublicKey: string | null;
+    vapidPrivateKey: string | null;
+    vapidPublicGenerated: boolean;
+    vapidSubject: string;
+    newsDailyCap: number;
+  };
 }
 
 export class ConfigError extends Error {}
+
+/**
+ * Generate a VAPID P-256 key pair the same way `web-push` does: the public key is the
+ * uncompressed point (0x04 ‖ X ‖ Y, 65 bytes) in base64url, the private key the scalar `d`.
+ * Both formats are what `web-push.setVapidDetails` validates and what
+ * `PushManager.subscribe({ applicationServerKey })` expects in the browser.
+ */
+export function generateVapidKeys(): { public_key: string; private_key: string } {
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const jwk = privateKey.export({ format: 'jwk' }) as { x: string; y: string; d: string };
+  const pub = Buffer.concat([Buffer.from([0x04]), Buffer.from(jwk.x, 'base64url'), Buffer.from(jwk.y, 'base64url')]);
+  return { public_key: pub.toString('base64url'), private_key: Buffer.from(jwk.d, 'base64url').toString('base64url') };
+}
 
 /** Parse and validate the environment. Throws `ConfigError` with a readable message. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -97,6 +126,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     }
     jwtSecret = randomBytes(48).toString('base64url');
     generated = true;
+  }
+
+  // VAPID: a stable pair is needed for subscriptions to survive a restart. In development a
+  // throwaway pair is generated per run (and main.ts logs that); in production both are required.
+  let vapidPublic = raw.VAPID_PUBLIC_KEY ?? '';
+  let vapidPrivate = raw.VAPID_PRIVATE_KEY ?? '';
+  let vapidGenerated = false;
+  if (!vapidPublic || !vapidPrivate) {
+    if (raw.NODE_ENV === 'production') {
+      throw new ConfigError('VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY are required in production (npm run vapid:keys).');
+    }
+    ({ public_key: vapidPublic, private_key: vapidPrivate } = generateVapidKeys());
+    vapidGenerated = true;
   }
 
   return {
@@ -129,6 +171,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       sync: raw.RATE_LIMIT_SYNC,
       ai: raw.RATE_LIMIT_AI,
       general: raw.RATE_LIMIT_GENERAL,
+    },
+    push: {
+      vapidPublicKey: vapidPublic,
+      vapidPrivateKey: vapidPrivate,
+      vapidPublicGenerated: vapidGenerated,
+      vapidSubject: raw.VAPID_SUBJECT,
+      newsDailyCap: raw.NEWS_PUSH_DAILY_CAP,
     },
   };
 }

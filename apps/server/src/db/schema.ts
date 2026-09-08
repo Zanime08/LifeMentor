@@ -142,4 +142,43 @@ CREATE TABLE IF NOT EXISTS news_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_news_cache_pub ON news_cache(published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_news_cache_cat ON news_cache(category, published_at DESC);
+
+-- Push notifications (docs/08 §5). Subscriptions hold the Web Push endpoint (+ future
+-- FCM tokens) and the per-user delivery queue: everything the server creates is stored
+-- here first, so a notification that cannot be pushed (app closed, device offline) is
+-- still picked up by polling GET /v1/notifications/pending on the next foreground.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  device_id    TEXT NOT NULL,
+  kind         TEXT NOT NULL DEFAULT 'web',   -- web | fcm
+  endpoint     TEXT NOT NULL,                 -- Web Push endpoint / FCM registration token
+  p256dh       TEXT,
+  auth_secret  TEXT,
+  user_agent   TEXT,
+  last_error   TEXT,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  UNIQUE (user_id, endpoint)
+);
+CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions(user_id);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  type         TEXT NOT NULL,                 -- daily_plan | schedule_start | task_reminder | …
+  title        TEXT NOT NULL,
+  body         TEXT,
+  url          TEXT,
+  data         TEXT,                          -- JSON payload for the service worker
+  urgent       INTEGER NOT NULL DEFAULT 0,
+  dedup_key    TEXT,
+  push_sent_at TEXT,
+  push_error   TEXT,
+  delivered_at TEXT,
+  created_at   TEXT NOT NULL,
+  expires_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_pending ON notifications(user_id, delivered_at, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_dedup ON notifications(user_id, dedup_key, created_at DESC);
 `;
