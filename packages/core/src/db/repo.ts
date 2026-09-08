@@ -139,6 +139,13 @@ export class EntityRepo<Row extends object> {
 
   private get versioned(): boolean { return this.spec.versioned !== false; }
 
+  /** Primary key column — needed by import/merge and diagnostics. */
+  get primaryKey(): string { return this.pk; }
+
+  get isSynced(): boolean { return this.spec.synced; }
+
+  get syncPriority(): number { return this.spec.syncPriority ?? 0; }
+
   private async columnNames(): Promise<string[]> {
     if (this.columns) return this.columns;
     const rows = await this.db.all<{ name: string }>(`PRAGMA table_info(${this.table})`);
@@ -188,7 +195,12 @@ export class EntityRepo<Row extends object> {
 
     const record: Record<string, unknown> = { ...(patch as Record<string, unknown>) };
     delete record[this.pk];
-    if (cols.includes('updated_at')) record.updated_at = nowIso();
+    if (cols.includes('updated_at')) {
+      // Applying an authoritative external state (a pulled remote row, an imported archive) must keep
+      // the timestamp it carries — conflict resolution and merge compare `updated_at` across devices.
+      const authoritative = ctx.keepVersion === true || ctx.actor === 'sync' || ctx.actor === 'import';
+      record.updated_at = authoritative && typeof record.updated_at === 'string' ? record.updated_at : nowIso();
+    }
     if (this.versioned && cols.includes('version') && !ctx.keepVersion) {
       record.version = Number(beforeRecord.version ?? 0) + 1;
     }

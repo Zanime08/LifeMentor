@@ -23,6 +23,11 @@ import { OnboardingService, type GoalDraft, type OnboardingAI } from './onboardi
 import type { GapCandidate } from './onboarding/interview';
 import type { AnswersMap } from './onboarding/interview';
 import { StrategyService } from './strategy/strategy';
+import { HttpSyncTransport, SyncEngine, type SyncEvent, type SyncTransport } from './services/sync';
+import { BackupService, type BackupStorage } from './services/backup';
+import { RecoveryService, type RecoveryReport } from './services/recovery';
+import { AuthService, HttpAuthTransport, type AuthTransport } from './services/auth';
+import { NodeBackupStorage, WebBackupStorage } from './platform/storage';
 import { PlannerService } from './planning/planner';
 
 import { ContextEngine } from './ai/context-engine';
@@ -36,6 +41,7 @@ import { hashEmbed } from './ai/providers/local';
 
 import { addGlobalSink, createLogger, setLogLevel, type Logger, type LogLevel, type LogSink } from './util/logging';
 import { newId } from './util/id';
+import { AppError } from './util/result';
 import { dayKey, nowIso } from './util/time';
 const log = createLogger('app');
 
@@ -60,6 +66,30 @@ export interface AIOptions {
   offlineFallback?: boolean;
 }
 
+export interface SyncOptions {
+  /** Custom transport (tests, alternative backends). */
+  transport?: SyncTransport;
+  serverUrl?: string;
+  /** Read the access token from the auth layer; override for a custom token source. */
+  getToken?: () => Promise<string | null>;
+  autoStart?: boolean;
+  intervalMs?: number;
+  onEvent?: (event: SyncEvent) => void;
+}
+
+export interface BackupOptions {
+  storage?: BackupStorage;
+  /** Directory for the Node/desktop storage implementation. */
+  directory?: string;
+  /** Take a backup during `bootstrap()` when none exists yet. Default true. */
+  onFirstLaunch?: boolean;
+}
+
+export interface AuthOptions {
+  transport?: AuthTransport;
+  serverUrl?: string;
+}
+
 export interface LifeMentorOptions {
   /** Explicit driver, or options to build one. */
   driver?: SqlDriver;
@@ -70,8 +100,13 @@ export interface LifeMentorOptions {
   ai?: AIOptions;
   logging?: { level?: LogLevel; sinks?: LogSink[] };
   taskHooks?: TaskHooks;
-  /** Run the first-launch bootstrap (defaults, device registration). Default true. */
+  /** Run the first-launch bootstrap (defaults, device registration, recovery). Default true. */
   bootstrap?: boolean;
+  sync?: SyncOptions;
+  backup?: BackupOptions;
+  auth?: AuthOptions;
+  /** Recovery runs automatically during bootstrap; disable for a read-only open. */
+  recover?: boolean;
 }
 
 export interface AppServices {
@@ -95,6 +130,11 @@ export interface AppServices {
   strategy: StrategyService;
   planner: PlannerService;
   onboarding: OnboardingService;
+  backup: BackupService;
+  recovery: RecoveryService;
+  auth: AuthService;
+  /** Null until a sync transport/server URL is configured. */
+  sync: SyncEngine | null;
 }
 
 export interface AppAI {
@@ -130,6 +170,9 @@ export class LifeMentorApp {
   readonly logger: Logger;
   readonly services: AppServices;
   readonly ai: AppAI;
+  /** Result of the startup recovery sequence (null when bootstrap/recovery was skipped). */
+  recoveryReport: RecoveryReport | null = null;
+  private networkUnsubscribe: (() => void) | null = null;
 
   private constructor(
     db: Database,
@@ -146,6 +189,41 @@ export class LifeMentorApp {
     this.logger = log;
     this.services = services;
     this.ai = ai;
+  }
+
+  /** Start periodic sync and reconnect handling. Called automatically when sync is configured. */
+  enableSync(engine: SyncEngine, intervalMs = 5 * 60_000): void {
+    (this.services as { sync: SyncEngine | null }).sync = engine;
+    engine.start(intervalMs);
+    if (!this.networkUnsubscribe) {
+      this.networkUnsubscribe = this.platform.network.onChange((online) => {
+        if (online) void engine.notifyOnline();
+      });
+    }
+  }
+
+  /**
+   * Enable cloud sync at runtime — used when the user enters a server URL in settings
+   * or signs in for the first time. Idempotent.
+   */
+  configureSync(options: { serverUrl?: string; transport?: SyncTransport; intervalMs?: number; onEvent?: (event: SyncEvent) => void } = {}): SyncEngine {
+    if (this.services.sync && !options.transport && !options.serverUrl) return this.services.sync;
+    const transport = options.transport ?? new HttpSyncTransport({
+      serverUrl: options.serverUrl ?? '',
+      deviceId: this.deviceId,
+      getToken: () => this.services.auth.accessToken(),
+    });
+    if (!options.transport && !options.serverUrl) {
+      throw new AppError('validation', 'configureSync needs a serverUrl or a transport', {
+        userMessage: 'Enter the LifeMentor server address to enable sync.',
+      });
+    }
+    const engine = new SyncEngine({
+      repos: this.repos, transport, settings: this.services.settings, deviceId: this.deviceId, onEvent: options.onEvent,
+    });
+    this.enableSync(engine, options.intervalMs);
+    void this.services.settings.setMany({ sync: { enabled: true, auto_sync: true, server_url: options.serverUrl ?? null } }, { actor: 'user' });
+    return engine;
   }
 
   /** Open (or create) the database and wire every layer. */
@@ -221,16 +299,47 @@ export class LifeMentorApp {
       news, projects, profile, memory, planner, settings, deviceId,
     });
 
+    // ── backup / recovery / auth / sync ─────────────────────────────────
+    const backupStorage = options.backup?.storage ?? defaultBackupStorage(platform.name, options.backup?.directory);
+    const backup = new BackupService({ db, repos, storage: backupStorage, settings, deviceId });
+
+    const auth = new AuthService({
+      repos, secureStorage: platform.secureStorage, settings, deviceId, backup,
+      transport: options.auth?.transport,
+      transportFactory: async () => {
+        const url = options.auth?.serverUrl ?? (await settings.all()).sync.server_url;
+        return url ? new HttpAuthTransport({ serverUrl: url }) : null;
+      },
+    });
+
+    const syncTransport = options.sync?.transport
+      ?? (options.sync?.serverUrl
+        ? new HttpSyncTransport({
+          serverUrl: options.sync.serverUrl,
+          deviceId,
+          getToken: options.sync.getToken ?? (() => auth.accessToken()),
+        })
+        : null);
+
+    const sync = syncTransport
+      ? new SyncEngine({ repos, transport: syncTransport, settings, deviceId, onEvent: options.sync?.onEvent })
+      : null;
+
+    const recovery = new RecoveryService({ db, repos, settings, sync: sync ?? undefined, backup, snapshots, deviceId });
+
     const app = new LifeMentorApp(db, repos, deviceId, platform, {
       settings, personalization, profile, goals, tasks, calendar, projects, skills, learning,
       memory, knowledge, news, notifications, progress, snapshots, weeklyReviews, monthlyReviews,
-      strategy, planner, onboarding,
+      strategy, planner, onboarding, backup, recovery, auth, sync,
     }, {
       provider, tools, context, conversations, orchestrator, mentor,
       embedder, isOffline: provider.id.startsWith('local'),
     });
 
-    if (options.bootstrap !== false) await app.bootstrap(options.deviceName);
+    if (options.bootstrap !== false) {
+      await app.bootstrap(options.deviceName, { recover: options.recover !== false, firstLaunchBackup: options.backup?.onFirstLaunch });
+      if (sync && options.sync?.autoStart !== false) app.enableSync(sync, options.sync?.intervalMs);
+    }
     return app;
   }
 
@@ -239,7 +348,10 @@ export class LifeMentorApp {
    * device registration, current-device marker. Idempotent and crash-safe —
    * it only writes what is missing.
    */
-  async bootstrap(deviceName?: string): Promise<{ firstLaunch: boolean; deviceId: string }> {
+  async bootstrap(
+    deviceName?: string,
+    options: { recover?: boolean; firstLaunchBackup?: boolean } = {},
+  ): Promise<{ firstLaunch: boolean; deviceId: string; recovery: RecoveryReport | null }> {
     const firstLaunch = !(await this.repos.devices.exists({}));
     await this.services.notifications.ensureDefaults({ actor: 'system', deviceId: this.deviceId });
 
@@ -257,8 +369,20 @@ export class LifeMentorApp {
     await this.repos.db.run('UPDATE devices SET is_current = 0 WHERE id <> ?', [this.deviceId]);
     await this.repos.db.run('UPDATE devices SET is_current = 1 WHERE id = ?', [this.deviceId]);
 
-    log.info('app ready', { deviceId: this.deviceId, firstLaunch, provider: this.ai.provider.id });
-    return { firstLaunch, deviceId: this.deviceId };
+    // Crash recovery runs before the first screen (req. 13).
+    if (options.recover !== false) {
+      this.recoveryReport = await this.services.recovery.startup();
+      if (!this.recoveryReport.ok) log.error('startup recovery reported critical problems', { issues: this.recoveryReport.issues });
+    }
+
+    if (firstLaunch && options.firstLaunchBackup !== false) {
+      await this.services.backup.createBackup('auto', 'first launch baseline').catch((error) => {
+        log.warn('first-launch backup failed', { error: error instanceof Error ? error.message : String(error) });
+      });
+    }
+
+    log.info('app ready', { deviceId: this.deviceId, firstLaunch, provider: this.ai.provider.id, sync: Boolean(this.services.sync) });
+    return { firstLaunch, deviceId: this.deviceId, recovery: this.recoveryReport };
   }
 
   /** Everything a diagnostics screen needs (req. 96: no silent failures). */
@@ -333,6 +457,13 @@ export class LifeMentorApp {
     pruned += await this.services.news.prune(30);
     pruned += await this.services.notifications.pruneDelivered(30);
 
+    if (snapshot) {
+      await this.services.backup.createBackup('auto', `daily ${day}`).catch((error) => {
+        log.warn('daily backup failed', { error: error instanceof Error ? error.message : String(error) });
+      });
+      await this.services.backup.rotate();
+    }
+
     await this.db.checkpoint();
     return { snapshot, weekly, monthly, pruned };
   }
@@ -340,6 +471,9 @@ export class LifeMentorApp {
   /** Flush everything to durable storage and close the driver. */
   async close(): Promise<void> {
     try {
+      this.services.sync?.stop();
+      this.networkUnsubscribe?.();
+      this.networkUnsubscribe = null;
       await this.db.checkpoint();
     } catch (error) {
       log.warn('checkpoint before close failed', { error: error instanceof Error ? error.message : String(error) });
@@ -452,6 +586,12 @@ export function createOnboardingAI(orchestrator: AIOrchestrator): OnboardingAI {
       return result.data.summary;
     },
   };
+}
+
+/** Backups live on the filesystem on desktop/server and in OPFS/IndexedDB in a browser. */
+function defaultBackupStorage(platform: string, directory?: string): BackupStorage {
+  if (platform === 'web') return new WebBackupStorage();
+  return new NodeBackupStorage({ directory: directory ?? 'backups' });
 }
 
 function weekStartOf(date: Date): string {

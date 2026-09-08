@@ -6,11 +6,13 @@
   "description": "LifeMentor core: domain model, SQLite persistence, services, AI orchestration, planning, memory, sync.",
   "exports": {
     ".": "./src/index.ts",
-    "./node": "./src/platform/node/index.ts",
-    "./wasm": "./src/platform/wasm/index.ts",
-    "./tauri": "./src/platform/tauri/index.ts",
-    "./capacitor": "./src/platform/capacitor/index.ts",
-    "./schema": "./src/db/schema/index.ts"
+    "./node": "./src/db/drivers/node.ts",
+    "./wasm": "./src/db/drivers/wasm.ts",
+    "./tauri": "./src/platform/tauri/sql-driver.ts",
+    "./capacitor": "./src/platform/capacitor/sql-driver.ts",
+    "./migrations": "./src/db/migrations/index.ts",
+    "./platform": "./src/platform/adapter.ts",
+    "./storage": "./src/platform/storage.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -23,5 +25,6 @@
   "devDependencies": {
     "@types/sql.js": "^1.4.11",
     "sql.js": "^1.12.0"
-  }
+  },
+  "types": "./src/index.ts"
 }
