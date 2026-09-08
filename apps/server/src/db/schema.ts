@@ -108,4 +108,38 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_event ON audit_log(event, created_at);
+
+-- News engine (server side): fetched RSS feeds are parsed, de-duplicated and stored
+-- here so every client can pull a structured, offline-capable feed (docs/08 §4).
+-- This is public information, not user data — but it is still versioned like the rest.
+CREATE TABLE IF NOT EXISTS news_sources (
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  url             TEXT NOT NULL UNIQUE,
+  category        TEXT NOT NULL,
+  kind            TEXT NOT NULL DEFAULT 'rss',
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  etag            TEXT,
+  last_fetched_at TEXT,
+  last_error      TEXT,
+  created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS news_cache (
+  url_hash        TEXT PRIMARY KEY,
+  source_id       TEXT REFERENCES news_sources(id) ON DELETE SET NULL,
+  title           TEXT NOT NULL,
+  url             TEXT NOT NULL,
+  summary         TEXT,
+  what_happened   TEXT,
+  why_it_matters  TEXT,
+  context         TEXT,
+  impact          TEXT,
+  category        TEXT NOT NULL,
+  urgency         TEXT NOT NULL DEFAULT 'digest',
+  published_at    TEXT,
+  fetched_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_news_cache_pub ON news_cache(published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_news_cache_cat ON news_cache(category, published_at DESC);
 `;

@@ -6,6 +6,7 @@ import { AiGateway } from './services/ai-gateway';
 import { SyncStore } from './services/sync-store';
 import { TokenService, type JwtSigner } from './services/tokens';
 import { UserStore } from './services/users';
+import { NewsFeedService } from './services/news-feed';
 
 export const SERVER_NAME = 'lifementor-server';
 export const SERVER_VERSION = '0.1.0';
@@ -24,6 +25,7 @@ export interface ServerContext {
   tokens: TokenService;
   sync: SyncStore;
   ai: AiGateway;
+  news: NewsFeedService;
   version: string;
   close(): Promise<void>;
 }
@@ -53,9 +55,14 @@ export async function createContext(config: ServerConfig, overrides: ContextOver
 
   const ai = new AiGateway(db, audit, config, overrides.aiProvider);
 
+  // News polling runs only in real (non-test) servers; tests stay hermetic.
+  const news = new NewsFeedService(db, config.env === 'test' ? Number.MAX_SAFE_INTEGER : 30 * 60_000);
+  if (config.env !== 'test') void news.start();
+
   return {
-    config, db, audit, users, tokens, sync, ai, version: SERVER_VERSION,
+    config, db, audit, users, tokens, sync, ai, news, version: SERVER_VERSION,
     async close(): Promise<void> {
+      news.stop();
       await db.close();
     },
   };
