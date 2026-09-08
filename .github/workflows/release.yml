@@ -1,9 +1,20 @@
 name: release
 
+# Cuts the installable artifacts for a tag (or manually):
+#   • Windows  → LifeMentor Setup .exe  (Tauri 2, NSIS, native SQLite via rusqlite)
+#   • Android  → LifeMentor .apk        (Capacitor 8, platform SQLite)
+#
+# The shared web bundle is built once per job by the shell's beforeBuild/beforeDev
+# commands — the same pipeline a developer runs locally (docs/11-packaging.md).
+
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   tests:
@@ -18,3 +29,81 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+
+  windows:
+    name: Windows installer (NSIS)
+    needs: tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: cargo-win-${{ hashFiles('apps/desktop/src-tauri/Cargo.toml') }}
+          restore-keys: cargo-win-
+      - run: npm ci
+      # `tauri build` runs beforeBuildCommand (web build) and bundles the NSIS installer.
+      - name: Build LifeMentor for Windows
+        working-directory: apps/desktop
+        run: npx tauri build
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: LifeMentor-Windows
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+
+  android:
+    name: Android APK
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: npm ci
+      # FCM: drop the Firebase project config in place when the secret is provided
+      # (docs/11 §FCM). Without it the APK still builds — push rides the polling fallback.
+      - name: Configure FCM (google-services.json)
+        if: ${{ secrets.GOOGLE_SERVICES_JSON_B64 != '' }}
+        working-directory: apps/mobile/android/app
+        run: echo "${{ secrets.GOOGLE_SERVICES_JSON_B64 }}" | base64 -d > google-services.json
+      # web build + cap sync android (the one-command local flow).
+      - name: Build web bundle & sync Capacitor
+        run: npm run shell:android
+      - name: Build APK (debug — installable)
+        working-directory: apps/mobile/android
+        run: ./gradlew assembleDebug --no-daemon
+      - name: Build APK (release — signed via repo keystore, if configured)
+        if: ${{ vars.ANDROID_KEYSTORE_B64 != '' }}
+        working-directory: apps/mobile/android
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > lifementor-release.keystore
+          ./gradlew assembleRelease --no-daemon \
+            -PRELEASE_KEY_STORE=lifementor-release.keystore \
+            -PRELEASE_KEY_ALIAS="${{ vars.ANDROID_KEY_ALIAS }}" \
+            -PRELEASE_KEY_PASSWORD="${{ secrets.ANDROID_KEY_PASSWORD }}" \
+            -PRELEASE_STORE_PASSWORD="${{ secrets.ANDROID_STORE_PASSWORD }}"
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LifeMentor-Android
+          path: |
+            apps/mobile/android/app/build/outputs/apk/debug/*.apk
+            apps/mobile/android/app/build/outputs/apk/release/*.apk
