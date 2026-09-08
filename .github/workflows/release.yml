@@ -22,3 +22,35 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+
+  windows:
+    name: Windows installer (NSIS)
+    needs: tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: cargo-win-${{ hashFiles('apps/desktop/src-tauri/Cargo.toml') }}
+          restore-keys: cargo-win-
+      - run: npm ci
+      - name: Build LifeMentor for Windows
+        working-directory: apps/desktop
+        run: npx tauri build
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: LifeMentor-Windows
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
