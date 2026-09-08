@@ -5,8 +5,20 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  hello:
+  tests:
+    name: Tests & typecheck
     runs-on: ubuntu-latest
     steps:
-      - run: echo hello-from-lifementor
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
