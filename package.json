@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "LifeMentor — AI Personal Development Operating System (Windows + Android, local-first SQLite, cloud sync)",
+  "description": "LifeMentor \u2014 AI Personal Development Operating System (Windows + Android, local-first SQLite, cloud sync)",
   "workspaces": [
     "packages/core",
     "apps/server",
@@ -25,10 +25,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
     "db:integrity": "npm run db:integrity --workspace @lifementor/server",
-    "seed:demo": "npm run seed:demo --workspace @lifementor/server",
-    "package:windows": "bash scripts/package-windows.sh",
-    "package:android": "bash scripts/package-android.sh",
-    "clean": "node scripts/clean.mjs"
+    "clean": "node scripts/clean.mjs",
+    "build:server": "npm run build --workspace @lifementor/server"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

@@ -13,8 +13,11 @@ import { AppError } from '../../util/result';
  */
 export interface GatewayConfig {
   serverUrl: string;
-  /** Returns the current access token, refreshed by the auth layer. */
-  getToken: () => Promise<string | null>;
+  /**
+   * Returns the current access token, refreshed by the auth layer.
+   * Optional: `LifeMentorApp.create` wires it to `AuthService.accessToken()` automatically.
+   */
+  getToken?: () => Promise<string | null>;
   /** Device id sent with every call so the server can attribute usage. */
   deviceId?: string;
   timeoutMs?: number;
@@ -43,8 +46,12 @@ export class GatewayProvider implements AIProvider {
 
   private get baseUrl(): string { return this.config.serverUrl.replace(/\/$/, ''); }
 
+  private async token(): Promise<string | null> {
+    return this.config.getToken ? this.config.getToken() : null;
+  }
+
   private async call<T>(path: string, payload: unknown, timeoutMs = 60_000): Promise<T> {
-    const token = await this.config.getToken();
+    const token = await this.token();
     if (!token) {
       throw new AppError('unauthorized', 'Not signed in to the LifeMentor server', {
         userMessage: 'AI is unavailable offline and you are not signed in. Connect to the server or enable offline mode.',
@@ -85,7 +92,7 @@ export class GatewayProvider implements AIProvider {
   }
 
   async stream(request: GenerationRequest, onDelta: (delta: StreamDelta) => void): Promise<GenerationResult> {
-    const token = await this.config.getToken();
+    const token = await this.token();
     if (!token) return this.generate(request).then((r) => { if (r.text) onDelta({ text: r.text }); onDelta({ done: true }); return r; });
 
     const controller = new AbortController();

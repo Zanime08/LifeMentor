@@ -133,7 +133,7 @@ export class CalendarService {
     const days = Math.ceil(hours / 24) + 1;
     const out: CalendarEvent[] = [];
     for (let i = 0; i < days; i++) out.push(...await this.listDay(dayKey(addMinutes(from, i * 24 * 60))));
-    const limit = from.getTime() + hours * 60_000;
+    const limit = from.getTime() + hours * 60 * 60_000;
     return out
       .filter((e) => new Date(e.starts_at).getTime() >= from.getTime() - 60_000 && new Date(e.starts_at).getTime() <= limit)
       .sort((a, b) => a.starts_at.localeCompare(b.starts_at));

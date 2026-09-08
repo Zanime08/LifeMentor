@@ -260,8 +260,16 @@ export class LifeMentorApp {
 
     // ── AI ────────────────────────────────────────────────────────────
     const aiOptions = options.ai ?? {};
+    // A gateway provider only needs the server URL: its token source is wired to the auth layer
+    // below, once that exists (req. 20 — the client authenticates, the server holds the keys).
+    const gatewayToken: { get: () => Promise<string | null> } = { get: async () => null };
+    const providerConfigs: ProviderConfig[] = (aiOptions.providers ?? []).map((config) => (
+      config.kind === 'gateway' && config.gateway && !config.gateway.getToken
+        ? { ...config, gateway: { ...config.gateway, getToken: () => gatewayToken.get() } }
+        : config
+    ));
     const provider = aiOptions.provider
-      ?? (aiOptions.providers?.length ? createProviderChain(aiOptions.providers) : new LocalHeuristicProvider());
+      ?? (providerConfigs.length ? createProviderChain(providerConfigs) : new LocalHeuristicProvider());
     const offlineFallback = aiOptions.offlineFallback !== false && !provider.id.startsWith('local');
     const embedder = buildEmbedder(aiOptions.embeddings ?? (provider.capabilities.embeddings ? 'provider' : 'local'), provider);
     const memory = new MemoryService(repos, { embedder: embedder ?? undefined });
@@ -303,6 +311,13 @@ export class LifeMentorApp {
     const backupStorage = options.backup?.storage ?? defaultBackupStorage(platform.name, options.backup?.directory);
     const backup = new BackupService({ db, repos, storage: backupStorage, settings, deviceId });
 
+    // The configured server URL is part of the user's settings, not just of the transports:
+    // the account row, the sync screen and diagnostics all read it from there.
+    const configuredServerUrl = options.sync?.serverUrl ?? options.auth?.serverUrl ?? null;
+    if (configuredServerUrl) {
+      await settings.setMany({ sync: { server_url: configuredServerUrl } }, { actor: 'system', sync: false });
+    }
+
     const auth = new AuthService({
       repos, secureStorage: platform.secureStorage, settings, deviceId, backup,
       transport: options.auth?.transport,
@@ -311,6 +326,8 @@ export class LifeMentorApp {
         return url ? new HttpAuthTransport({ serverUrl: url }) : null;
       },
     });
+
+    gatewayToken.get = () => auth.accessToken();
 
     const syncTransport = options.sync?.transport
       ?? (options.sync?.serverUrl

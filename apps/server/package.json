@@ -11,7 +11,7 @@
     "start": "node dist/main.mjs",
     "test": "vitest run --dir test",
     "db:integrity": "tsx src/tools/integrity.ts",
-    "seed:demo": "tsx src/tools/seed-demo.ts"
+    "integrity": "tsx src/tools/integrity.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
