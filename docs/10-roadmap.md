@@ -60,10 +60,17 @@ first-launch backup, offline AI degradation, offline sync, and data surviving a 
 
 ## Next phases
 
-1. **Produce the binaries**: tag a `v*` (CI builds the NSIS `.exe` + APK) or run the one-command
-   builds on a machine with Rust / JDK (docs/11-packaging.md). For FCM in the shipped APK, also
-   set the `GOOGLE_SERVICES_JSON_B64` repository secret and the server's `FIREBASE_*` env.
-2. **Polish & hardening**: a11y pass, empty states, error copy, performance, Playwright UI tests.
+1. **Windows binary — DONE** (CI run `v0.1.0`, `34385552964`, 2026-09-09): the release workflow
+   (`on: push tags v*`) builds the NSIS installer on `windows-latest` → artifact
+   `LifeMentor-Windows` (`LifeMentor_0.1.0_x64-setup.exe`). The native SQLite core
+   (`apps/desktop/src-tauri/src/db.rs`, rusqlite 0.32) went through 6 compile-error fixes
+   verified by the CI compiler — the contract is pinned by
+   `packages/core/test/tauri-driver.test.ts`.
+2. **Produce the Android APK**: same workflow gains an `android` job (JDK 17 + Android SDK,
+   `npm run shell:android` → `./gradlew assembleRelease`, release keystore from repo secrets).
+   For FCM in the shipped APK, also set the `GOOGLE_SERVICES_JSON_B64` repository secret and the
+   server's `FIREBASE_*` env (without them the APK builds, push stays off, polling still works).
+3. **Polish & hardening**: a11y pass, empty states, error copy, performance, Playwright UI tests.
 
 ## Web UI — what is built (`apps/web`, React + Vite, runs as the dev preview)
 
