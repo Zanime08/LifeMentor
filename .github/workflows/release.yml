@@ -83,6 +83,11 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;35.0.0 build-tools;36.0.0'
+      - name: Point gradle at the SDK (local.properties)
+        shell: bash
+        run: echo "sdk.dir=${ANDROID_HOME:-$HOME/.android/sdk}" > apps/mobile/android/local.properties
       - run: npm ci
       - name: FCM google-services.json (from secret, or absent → honest fallback)
         shell: bash
