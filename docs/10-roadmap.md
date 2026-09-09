@@ -74,7 +74,22 @@ first-launch backup, offline AI degradation, offline sync, and data surviving a 
    generates a throwaway key (this APK's update chain is bound to that key — store a permanent
    keystore). FCM activation is a separate external step: `GOOGLE_SERVICES_JSON_B64` repo secret
    + server `FIREBASE_*` env (docs/11 §8).
-3. **Polish & hardening**: a11y pass, empty states, error copy, performance, Playwright UI tests.
+3. **Polish & hardening** (in progress, 2026-09-09):
+   - **DONE — error copy**: `lib/errors.ts` `userError()` maps engine/server failures to short
+     Russian sentences; all 23 raw `toast(e.message)` sites across 9 screens now go through
+     `toastError` (technical detail stays in `console.warn`); server `userMessage` always wins.
+   - **DONE — toast a11y**: toasts render in a persistent `role="status" aria-live="polite"`
+     container (screen readers announce them); close buttons have accessible names.
+   - **DONE — icon-button audit**: every icon-only button in the app now has an `aria-label`
+     (shell nav/bell were already labelled; notifications popover close button fixed).
+   - **DONE — Playwright UI smoke in CI**: `ui-smoke` job in `release.yml` boots the real dev
+     stack (Vite + server, `/v1/health` readiness probe) in Chromium and verifies a fresh
+     browser renders onboarding with zero uncaught page errors; traces retained on failure.
+     CI-only (sandbox has no browser) — first run happens on the next tag / manual dispatch.
+   - **DONE — performance static audit (§96)**: no `JSON.stringify` in render loops, `useMemo`
+     on the compute-heavy screens, heavy work lives in the Rust/WASM layer. No action items.
+   - **Audited, already fine**: empty states on all 13 screens (Russian title + hint + action).
+   - **Remaining**: deep performance profiling (separate phase, needs a real device).
 
 ## Web UI — what is built (`apps/web`, React + Vite, runs as the dev preview)
 
@@ -99,7 +114,7 @@ npm run dev                 # both, in one terminal
 npm run build:server        # bundle → apps/server/dist/main.mjs
 npm start                   # run the bundle
 
-npm test                    # 109 tests (core + server + shell driver contracts + web bootstrap)
+npm test                    # 121 tests (core + server + shell driver contracts + web bootstrap)
 npm run typecheck           # tsc --noEmit over the whole monorepo
 npm run db:integrity        # server database diagnostics
 
