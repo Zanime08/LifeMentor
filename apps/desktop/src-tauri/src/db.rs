@@ -239,12 +239,13 @@ pub fn sql_restore_bytes(state: tauri::State<AppState>, bytes: Vec<u8>) -> Resul
     }
     let path = {
         let mut guard = locked(&state)?;
-        let db = require(&mut guard)?; // &mut OpenDb
-        let path = db.path.clone();
-        // close() consumes the connection and returns it on success (Result<Connection>).
+        // Take ownership (close(self) moves the connection; partial move of OpenDb
+        // is fine — OpenDb itself has no Drop impl, and path stays after conn moves).
+        let db = guard
+            .take()
+            .ok_or_else(|| "database is not open (sql_open was not called)".to_string())?;
         db.conn.close().map_err(|(_conn, e)| format!("close before restore: {e}"))?;
-        guard.take(); // remove the (closed) database from state
-        path
+        db.path
     };
     std::fs::write(&path, &bytes).map_err(|e| format!("snapshot write failed: {e}"))?;
     for suffix in ["-wal", "-shm"] {
