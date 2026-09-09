@@ -64,7 +64,7 @@ environment variables on the build machine — Tauri signs the NSIS installer an
 
 ### Android — `LifeMentor.apk`
 
-Release machine: **JDK 17** + **Android SDK** (compileSdk 36; `ANDROID_HOME` set or
+Release machine: **JDK 21** (Capacitor 8 compiles with `sourceCompatibility 21`) + **Android SDK** (compileSdk 36; `ANDROID_HOME` set or
 Android Studio installed).
 
 ```bash
@@ -122,7 +122,7 @@ UNREGISTERED) are removed server-side automatically; the device re-registers on 
 
 `.github/workflows/release.yml` (on tag `v*` or manually): runs the test suite, builds the
 NSIS installer on `windows-latest` (Rust cached) and the APK on `ubuntu-latest`
-(JDK 17), uploads both as artifacts. Release APK signing is enabled when the repository has
+(JDK 21), uploads both as artifacts. Release APK signing is enabled when the repository has
 the `ANDROID_KEYSTORE_B64`/`ANDROID_KEY_ALIAS` variables and the matching secrets. FCM is
 enabled in the CI-built APK when the repository has the `GOOGLE_SERVICES_JSON_B64` secret
 (base64 of `google-services.json`) — otherwise the APK ships with the polling fallback, as
