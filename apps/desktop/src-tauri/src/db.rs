@@ -11,7 +11,7 @@
 //! The contract is pinned by `packages/core/test/tauri-driver.test.ts`, which emulates this
 //! module against node:sqlite and runs the real `TauriSqlDriver` through it.
 
-use rusqlite::types::{Value, ValueRef};
+use rusqlite::types::{ToSql, Value, ValueRef};
 use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -61,8 +61,15 @@ fn to_param(v: &serde_json::Value) -> Value {
     }
 }
 
-fn bind(params: &Option<Vec<serde_json::Value>>) -> Vec<Value> {
+/// JSON parameters → owned rusqlite values (caller keeps them alive for the query).
+fn to_values(params: &Option<Vec<serde_json::Value>>) -> Vec<Value> {
     params.as_deref().unwrap_or_default().iter().map(to_param).collect()
+}
+
+/// The form `Params` is implemented for in rusqlite 0.32: `&[&dyn ToSql]`.
+/// `values` must outlive the returned references (it does — same function scope).
+fn as_params<'a>(values: &'a Vec<Value>) -> Vec<&'a dyn ToSql> {
+    values.iter().map(|v| v as &'a dyn ToSql).collect()
 }
 
 /// One row → JSON object (column name → value). Column names are captured from the
@@ -89,7 +96,8 @@ fn column_names(stmt: &rusqlite::Statement) -> Vec<String> {
 }
 
 fn first_row(conn: &Connection, sql: &str, params: &Option<Vec<serde_json::Value>>) -> Result<Option<serde_json::Value>, String> {
-    let bound = bind(params);
+    let values = to_values(params);
+    let bound = as_params(&values);
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let names = column_names(&stmt);
     let mut rows = stmt
@@ -103,7 +111,8 @@ fn first_row(conn: &Connection, sql: &str, params: &Option<Vec<serde_json::Value
 }
 
 fn all_rows(conn: &Connection, sql: &str, params: &Option<Vec<serde_json::Value>>) -> Result<Vec<serde_json::Value>, String> {
-    let bound = bind(params);
+    let values = to_values(params);
+    let bound = as_params(&values);
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let names = column_names(&stmt);
     let mut rows = stmt
@@ -149,7 +158,8 @@ pub fn sql_open(state: tauri::State<AppState>, path: String, durability: String,
 pub fn sql_close(state: tauri::State<AppState>) -> Result<(), String> {
     let mut guard = locked(&state)?;
     if let Some(db) = guard.take() {
-        db.conn.close().map_err(|e| format!("close: {e}"))?;
+        // close() consumes the connection and returns it on success (Result<Connection>).
+        db.conn.close().map_err(|(_conn, e)| format!("close: {e}"))?;
     }
     Ok(())
 }
@@ -165,7 +175,8 @@ pub fn sql_exec(state: tauri::State<AppState>, sql: String) -> Result<(), String
 pub fn sql_run(state: tauri::State<AppState>, sql: String, params: Option<Vec<serde_json::Value>>) -> Result<serde_json::Value, String> {
     let mut guard = locked(&state)?;
     let db = require(&mut guard)?;
-    let bound = bind(&params);
+    let values = to_values(&params);
+    let bound = as_params(&values);
     let changes = db.conn.execute(&sql, bound.as_slice()).map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "changes": changes, "lastInsertRowid": db.conn.last_insert_rowid() }))
 }
@@ -230,7 +241,8 @@ pub fn sql_restore_bytes(state: tauri::State<AppState>, bytes: Vec<u8>) -> Resul
         let mut guard = locked(&state)?;
         let db = require(&mut guard)?; // &mut OpenDb
         let path = db.path.clone();
-        db.conn.close().map_err(|e| format!("close before restore: {e}"))?;
+        // close() consumes the connection and returns it on success (Result<Connection>).
+        db.conn.close().map_err(|(_conn, e)| format!("close before restore: {e}"))?;
         guard.take(); // remove the (closed) database from state
         path
     };
