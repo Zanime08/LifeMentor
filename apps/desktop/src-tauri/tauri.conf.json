@@ -38,8 +38,7 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "displayLanguageSelector": false,
-        "installerHooks": ""
+        "displayLanguageSelector": false
       }
     }
   }
