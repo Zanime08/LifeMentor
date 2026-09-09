@@ -116,17 +116,30 @@ jobs:
       - name: Build release APK
         shell: bash
         run: |
-          npm run shell:android
-          cd apps/mobile/android
-          ./gradlew assembleRelease \
-            -PRELEASE_KEY_STORE=app/release.keystore \
-            -PRELEASE_STORE_PASSWORD="$RELEASE_STORE_PASSWORD" \
-            -PRELEASE_KEY_ALIAS="$RELEASE_KEY_ALIAS" \
-            -PRELEASE_KEY_PASSWORD="$RELEASE_KEY_PASSWORD"
+          {
+            npm run shell:android
+            cd apps/mobile/android
+            ./gradlew assembleRelease \
+              -PRELEASE_KEY_STORE="$(pwd)/app/release.keystore" \
+              -PRELEASE_STORE_PASSWORD="$RELEASE_STORE_PASSWORD" \
+              -PRELEASE_KEY_ALIAS="$RELEASE_KEY_ALIAS" \
+              -PRELEASE_KEY_PASSWORD="$RELEASE_KEY_PASSWORD"
+          } 2>&1 | tee android-build.log
+          exit ${PIPESTATUS[0]}
         env:
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD || 'lifementor' }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS || 'lifementor' }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD || 'lifementor' }}
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-log
+          path: android-build.log
+      - name: Report failure (issue + branch)
+        if: failure()
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/ci-failure-report.ps1 -LogPath android-build.log; exit 0
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:

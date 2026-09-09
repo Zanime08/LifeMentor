@@ -1,16 +1,18 @@
-# CI failure reporter (Windows job):
-#  1. collects apps/desktop/tauri-build.log -> ci-failure.txt (+ token permissions)
+# CI failure reporter (build jobs):
+#  1. collects the job's build log (default apps/desktop/tauri-build.log, override -LogPath)
+#     -> ci-failure.txt (+ token permissions)
 #  2. channel A: GitHub issue with the full log (gh CLI, curl fallback)
 #  3. channel B: force-push of the log to the arena/ci-logs branch
 # Every native command's exit code is printed; nothing here may silently die.
+param([string]$LogPath = 'apps/desktop/tauri-build.log')
 $ErrorActionPreference = 'Continue'
 
-if (Test-Path 'apps/desktop/tauri-build.log') {
-    Copy-Item 'apps/desktop/tauri-build.log' 'ci-failure.txt' -Force
-    'log copied'
+if (Test-Path $LogPath) {
+    Copy-Item $LogPath 'ci-failure.txt' -Force
+    "log copied: $LogPath"
 } else {
-    Set-Content -Path 'ci-failure.txt' -Value 'tauri-build.log not found' -Encoding utf8
-    'WARNING: tauri-build.log missing'
+    Set-Content -Path 'ci-failure.txt' -Value "build log not found: $LogPath" -Encoding utf8
+    "WARNING: $LogPath missing"
 }
 
 $perm = gh api "repos/$env:GITHUB_REPOSITORY" --jq '.permissions' 2>&1
