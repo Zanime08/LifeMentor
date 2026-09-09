@@ -119,7 +119,7 @@ function NotificationPopover({ onClose, onOpenApp }: { onClose: () => void; onOp
       <div className="row" style={{ padding: '6px 10px 10px' }}>
         <b className="small">Уведомления</b>
         <div style={{ flex: 1 }} />
-        <Btn kind="ghost" size="xs" onClick={onClose}>{I.x}</Btn>
+        <Btn kind="ghost" size="xs" onClick={onClose} aria-label="Закрыть">{I.x}</Btn>
       </div>
       {notifications.length === 0 && <div className="small muted" style={{ padding: '14px 10px' }}>Пока тихо. Уведомления появляются, когда есть что сообщить — без спама.</div>}
       {notifications.slice(0, 12).map((n) => (

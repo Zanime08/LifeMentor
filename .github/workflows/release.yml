@@ -23,6 +23,30 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
+  ui-smoke:
+    name: UI smoke (Playwright)
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run UI smoke tests
+        run: npx playwright test
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            test-results
+            playwright-report
+
   windows:
     name: Windows installer (NSIS)
     needs: tests

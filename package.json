@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "LifeMentor \u2014 AI Personal Development Operating System (Windows + Android, local-first SQLite, cloud sync)",
+  "description": "LifeMentor — AI Personal Development Operating System (Windows + Android, local-first SQLite, cloud sync)",
   "workspaces": [
     "packages/core",
     "apps/server",
@@ -33,6 +33,7 @@
     "build:server": "npm run build --workspace @lifementor/server"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^22.10.2",
     "concurrently": "^9.1.0",
     "typescript": "^5.9.3",
