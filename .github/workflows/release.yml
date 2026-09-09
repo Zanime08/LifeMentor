@@ -58,22 +58,43 @@ jobs:
         with:
           name: tauri-build-log
           path: apps/desktop/tauri-build.log
-      - name: Commit build log to arena/ci-logs (on failure)
+      - name: Report failure (issue + branch)
         if: failure()
         shell: pwsh
         run: |
-          if (Test-Path apps/desktop/tauri-build.log) {
-            Copy-Item apps/desktop/tauri-build.log ci-failure.log -Force
-          } else {
-            Set-Content -Path ci-failure.log -Value 'tauri-build.log not found'
-          }
-          "=== repo permissions for GITHUB_TOKEN ===" | Add-Content ci-failure.log
-          gh api repos/$env:GITHUB_REPOSITORY --jq '.permissions' 2>&1 | Add-Content ci-failure.log
+          $ErrorActionPreference = 'Continue'
+          "=== REPORT STEP START ==="
+          try {
+            if (Test-Path apps/desktop/tauri-build.log) {
+              Copy-Item apps/desktop/tauri-build.log ci-failure.txt -Force
+              "copied tauri-build.log -> ci-failure.txt"
+            } else {
+              Set-Content -Path ci-failure.txt -Value 'tauri-build.log not found' -Encoding utf8
+              "WARNING: tauri-build.log not found"
+            }
+          } catch { Add-Content ci-failure.txt "COPY FAILED: $_" }
+          try {
+            $perms = gh api repos/$env:GITHUB_REPOSITORY --jq '.permissions' 2>&1
+            "repo permissions: $perms"
+            Add-Content ci-failure.txt "=== repo permissions: $perms"
+          } catch { Add-Content ci-failure.txt "gh api permissions failed: $_" }
           git config user.email "github-actions@github.com"
           git config user.name "github-actions[bot]"
-          git add -f ci-failure.log
-          git commit -m "ci: windows build failure log"
-          git push -f origin HEAD:arena/ci-logs
+          "=== trying ISSUE channel ==="
+          try {
+            $title = "CI: Windows build failure log ($(Get-Date -Format yyyyMMdd-HHmm))"
+            gh issue create --title $title --body-file ci-failure.txt
+            "ISSUE CREATED"
+          } catch { "ISSUE CHANNEL FAILED: $_" }
+          "=== trying BRANCH channel ==="
+          try {
+            git add -f ci-failure.txt
+            git commit -m "ci: windows build failure log"
+            git push -f origin HEAD:arena/ci-logs
+            "BRANCH PUSHED"
+          } catch { "BRANCH CHANNEL FAILED: $_" }
+          "=== REPORT STEP END ==="
+
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
