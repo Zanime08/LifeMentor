@@ -5,7 +5,7 @@ import { useApp } from '../state/store';
 import { fmtMinutes, plural, timeAgo } from '../lib/ru';
 
 export function Learning() {
-  const { app, version, mutate, toast } = useApp();
+  const { app, version, mutate, toast, toastError } = useApp();
   const [paths, setPaths] = useState<LearningPath[] | null>(null);
   const [openPath, setOpenPath] = useState<PathView | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -26,7 +26,7 @@ export function Learning() {
   const open = async (id: string) => {
     if (!app) return;
     try { setOpenPath(await app.services.learning.pathView(id)); }
-    catch (e) { toast(e instanceof Error ? e.message : String(e), 'error'); }
+    catch (e) { toastError(e); }
   };
 
   if (!paths) return <Spinner label="Загружаю обучение…" />;
@@ -171,7 +171,7 @@ function ProgressLog({ topicId, onClose, onDone }: { topicId: string; onClose: (
 }
 
 function PathCreate({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => void }) {
-  const { app, mutate, toast } = useApp();
+  const { app, mutate, toast, toastError } = useApp();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [skillId, setSkillId] = useState('');
@@ -196,7 +196,7 @@ function PathCreate({ onClose, onCreated }: { onClose: () => void; onCreated: (i
       toast('Путь создан. Начните с первой темы.', 'ok');
       onCreated(r.path.id);
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
       setBusy(false);
     }
   };

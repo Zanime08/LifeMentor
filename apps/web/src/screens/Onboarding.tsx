@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { QUESTIONNAIRE, type Question, type QuestionBlock } from '@lifementor/core';
 import type { GoalDraft } from '@lifementor/core';
 import { Btn, Field, I, Spinner, TextArea, TextInput, Tag } from '../components/ui';
+import { userError } from '../lib/errors';
 import { useApp } from '../state/store';
 import { BLOCK_RU, GAP_TYPE_RU, Q_RU, SECTION_RU, optRu } from '../lib/onboarding-ru';
 import { todayKey } from '../lib/ru';
@@ -12,7 +13,7 @@ type Stage = 'welcome' | 'questionnaire' | 'analysis' | 'interview' | 'preview' 
 const STAGE_ORDER: Stage[] = ['welcome', 'questionnaire', 'analysis', 'interview', 'preview', 'goals'];
 
 export function Onboarding() {
-  const { app, mutate, toast } = useApp();
+  const { app, mutate, toast, toastError } = useApp();
   const navigate = useNavigate();
   const [stage, setStage] = useState<Stage>('welcome');
   const [blockIdx, setBlockIdx] = useState(0);
@@ -28,7 +29,7 @@ export function Onboarding() {
       setStarted(true);
       setStage('questionnaire');
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     } finally {
       setBusy(false);
     }
@@ -106,7 +107,7 @@ async function runAnalysis(app: NonNullable<ReturnType<typeof useApp>['app']>, s
     set({ gaps: result.gaps.length, selected: result.selected.length });
     setStage('analysis');
   } catch (e) {
-    toast(e instanceof Error ? e.message : String(e), 'error');
+    toast(userError(e), 'error');
   }
 }
 
@@ -244,7 +245,7 @@ function QuestionView({ question, value, onChange }: { question: Question; value
 
 /* ── Stage 2: adaptive interview ────────────────────────────────────── */
 function Interview({ onDone }: { onDone: () => void }) {
-  const { app, mutate, toast, refresh } = useApp();
+  const { app, mutate, toast, toastError, refresh } = useApp();
   const [question, setQuestion] = useState<import('@lifementor/core').InterviewQuestion | null>(null);
   const [loading, setLoading] = useState(true);
   const [answer, setAnswer] = useState('');
@@ -282,7 +283,7 @@ function Interview({ onDone }: { onDone: () => void }) {
       setQuestion(null);
       await loadNext();
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     } finally {
       setBusy(false);
       refresh();
@@ -316,7 +317,7 @@ function Interview({ onDone }: { onDone: () => void }) {
 
 /* ── Stage 3: model preview — "Вот как я тебя понял" ────────────────── */
 function Preview({ onDone, toast, mutate }: { onDone: () => void; toast: (t: string, k?: 'info' | 'error' | 'ok' | 'warn') => void; mutate: <T>(fn: () => Promise<T>, ok?: string) => Promise<T | null> }) {
-  const { app } = useApp();
+  const { app, toastError } = useApp();
   const [preview, setPreview] = useState<Awaited<ReturnType<import('@lifementor/core').OnboardingService['previewModel']>> | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [removed, setRemoved] = useState<Set<string>>(new Set());
@@ -324,7 +325,7 @@ function Preview({ onDone, toast, mutate }: { onDone: () => void; toast: (t: str
 
   useEffect(() => {
     if (!app) return;
-    app.services.onboarding.previewModel().then(setPreview).catch((e) => toast(e instanceof Error ? e.message : String(e), 'error'));
+    app.services.onboarding.previewModel().then(setPreview).catch((e) => toastError(e));
   }, [app, toast]);
 
   const grouped = useMemo(() => {
@@ -353,7 +354,7 @@ function Preview({ onDone, toast, mutate }: { onDone: () => void; toast: (t: str
       toast('Модель пользователя подтверждена. Это факт — не предположение.', 'ok');
       onDone();
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     } finally {
       setBusy(false);
     }
@@ -422,7 +423,7 @@ function parseValue(text: string): unknown {
 
 /* ── Stage 4: initial goals + skills + first plan ───────────────────── */
 function GoalsStep({ onDone }: { onDone: () => void }) {
-  const { app, toast } = useApp();
+  const { app, toast, toastError } = useApp();
   const [drafts, setDrafts] = useState<GoalDraft[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
@@ -450,7 +451,7 @@ function GoalsStep({ onDone }: { onDone: () => void }) {
       await app.services.onboarding.complete();
       onDone();
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
       setBusy(false);
     }
   };

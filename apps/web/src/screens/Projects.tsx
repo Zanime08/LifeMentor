@@ -4,7 +4,7 @@ import { Btn, Card, Confirm, Empty, Field, I, Modal, PageHead, Progress, Select,
 import { useApp } from '../state/store';
 
 export function Projects() {
-  const { app, version, mutate, toast } = useApp();
+  const { app, version, mutate, toast, toastError } = useApp();
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [details, setDetails] = useState<ProjectDetails | null>(null);
@@ -138,7 +138,7 @@ function ProjectDetail({ details, onClose, onDeleted, onChanged }: { details: Pr
 }
 
 function ProjectCreate({ onClose }: { onClose: () => void }) {
-  const { app, mutate, toast } = useApp();
+  const { app, mutate, toast, toastError } = useApp();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [goalId, setGoalId] = useState('');
@@ -162,7 +162,7 @@ function ProjectCreate({ onClose }: { onClose: () => void }) {
       toast('Проект создан.', 'ok');
       onClose();
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     } finally {
       setBusy(false);
     }

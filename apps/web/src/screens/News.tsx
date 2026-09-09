@@ -59,7 +59,7 @@ export function News() {
         'ok');
       await load();
     } catch (e) {
-      setServerInfo({ last_fetched_at: null, error: e instanceof Error ? e.message : 'Сервер недоступен', count: 0 });
+      setServerInfo({ last_fetched_at: null, error: 'Сервер недоступен — лента не обновлена', count: 0 });
       toast('Сервер новостей недоступен. Локальная лента остаётся читаемой офлайн.', 'warn');
     } finally {
       setFetching(false);

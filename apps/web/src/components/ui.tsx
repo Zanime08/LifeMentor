@@ -142,13 +142,14 @@ export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
 /* ── toasts ─────────────────────────────────────────────────────────── */
 export function Toasts() {
   const { toasts, dismissToast } = useApp();
-  if (!toasts.length) return null;
+  // The container is always mounted (empty when idle) so screen readers
+  // reliably announce items via aria-live.
   return (
-    <div className="toasts">
+    <div className="toasts" role="status" aria-live="polite">
       {toasts.map((t) => (
         <div key={t.id} className={`toast ${t.kind}`}>
           <span className="grow">{t.text}</span>
-          <button type="button" className="btn ghost sm" style={{ color: 'inherit', borderColor: 'transparent' }} onClick={() => dismissToast(t.id)}>{I.x}</button>
+          <button type="button" className="btn ghost sm" style={{ color: 'inherit', borderColor: 'transparent' }} onClick={() => dismissToast(t.id)} aria-label="Закрыть уведомление">{I.x}</button>
         </div>
       ))}
     </div>

@@ -11,7 +11,7 @@ import { timeAgo } from '../lib/ru';
 type Health = Awaited<ReturnType<LifeMentorApp['health']>>;
 
 export function Settings() {
-  const { app, version, mutate, toast, auth, syncStatus, refresh } = useApp();
+  const { app, version, mutate, toast, toastError, auth, syncStatus, refresh } = useApp();
   const navigate = useNavigate();
   const [tab, setTab] = useState<'sync' | 'data' | 'planning' | 'notifications' | 'ai' | 'privacy' | 'diagnostics'>('sync');
 
@@ -45,7 +45,7 @@ export function Settings() {
 
 /* ── account & sync ─────────────────────────────────────────────────── */
 function SyncTab() {
-  const { app, mutate, toast, auth, syncStatus, version, refresh } = useApp();
+  const { app, mutate, toast, toastError, auth, syncStatus, version, refresh } = useApp();
   const navigate = useNavigate();
   const [conflicts, setConflicts] = useState<(SyncConflict & { local: Record<string, unknown>; remote: Record<string, unknown>; diff: FieldDiff[] })[]>([]);
   const [resolveFor, setResolveFor] = useState<(typeof conflicts)[number] | null>(null);
@@ -67,7 +67,7 @@ function SyncTab() {
       toast(`Синхронизация: отправлено ${report.pushed}, получено ${report.pulled}, конфликтов ${report.conflictsCreated}.`, 'ok');
       refresh();
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     } finally {
       setBusy(false);
     }
@@ -182,14 +182,14 @@ function SyncTab() {
       setResolveFor(null);
       refresh();
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     }
   }
 }
 
 /* ── data & backups ─────────────────────────────────────────────────── */
 function DataTab() {
-  const { app, mutate, toast, hardReset, auth } = useApp();
+  const { app, mutate, toast, toastError, hardReset, auth } = useApp();
   const [backups, setBackups] = useState<Awaited<ReturnType<import('@lifementor/core').BackupService['list']>>>([]);
   const [importPreview, setImportPreview] = useState<{ name: string; data: string } | null>(null);
   const [exportFirst, setExportFirst] = useState(true);
@@ -227,7 +227,7 @@ function DataTab() {
       setTimeout(() => URL.revokeObjectURL(url), 5000);
       toast('Экспорт создан: переносимый JSON-архив всех ваших данных.', 'ok');
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     }
   };
 
@@ -236,7 +236,7 @@ function DataTab() {
       const text = await file.text();
       setImportPreview({ name: file.name, data: text });
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     }
   };
 
@@ -250,7 +250,7 @@ function DataTab() {
       setImportPreview(null);
       window.location.reload();
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     }
   };
 
@@ -354,7 +354,7 @@ function DataTab() {
                 }
                 await hardReset();
               } catch (e) {
-                toast(e instanceof Error ? e.message : String(e), 'error');
+                toastError(e);
               }
             })();
           }}

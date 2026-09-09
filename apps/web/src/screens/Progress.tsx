@@ -5,7 +5,7 @@ import { useApp } from '../state/store';
 import { fmtDay, fmtDayShort, fmtMinutes, timeAgo } from '../lib/ru';
 
 export function ProgressScreen() {
-  const { app, version, mutate, toast } = useApp();
+  const { app, version, mutate, toast, toastError } = useApp();
   const [series, setSeries] = useState<DayMetrics[] | null>(null);
   const [streak, setStreak] = useState(0);
   const [achievements, setAchievements] = useState<import('@lifementor/core').Achievement[]>([]);
@@ -44,7 +44,7 @@ export function ProgressScreen() {
       toast('Еженедельный разбор готов: что вышло, что тормозило, что делать дальше.', 'ok');
       setWeekly((w) => [review, ...w]);
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     } finally {
       setBusy(null);
     }
@@ -58,7 +58,7 @@ export function ProgressScreen() {
       toast(r.skipped ? 'Снепшот на сегодня уже создан.' : 'Снепшот дня создан (автоматически создаётся и в конце дня).', 'ok');
       setSnapshots(await app.services.snapshots.list(30));
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     } finally {
       setBusy(null);
     }

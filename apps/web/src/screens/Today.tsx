@@ -5,7 +5,7 @@ import { useApp } from '../state/store';
 import { ENERGY_RU, KIND_RU, PRIORITY_RU, REASON_RU, SKIP_REASONS, fmtMinutes, hm, todayKey } from '../lib/ru';
 
 export function Today() {
-  const { app, mutate, toast, refresh } = useApp();
+  const { app, mutate, toast, toastError, refresh } = useApp();
   const day = todayKey();
   const [plan, setPlan] = useState<DayPlan | null>(null);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
@@ -50,7 +50,7 @@ export function Today() {
       if (p.overload) toast('Внимание: день перегружен — часть задач перенесена. Смотрите список ниже.', 'warn');
       else toast('План дня построен.', 'ok');
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     } finally {
       setRebuilding(false);
     }
@@ -66,7 +66,7 @@ export function Today() {
       await load();
       toast('Остаток дня пересобран: обязательства — прежде всего.', 'ok');
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     } finally {
       setRebuilding(false);
     }
@@ -203,7 +203,7 @@ export function Today() {
       await load();
       refresh();
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     }
   }
 }
@@ -238,7 +238,7 @@ function SlotView({ slot, task, onDone, onPostpone }: { slot: PlannedSlot; task?
 }
 
 function TaskForm({ onClose, onSaved, day }: { onClose: () => void; onSaved: () => void; day: string }) {
-  const { app, mutate, toast } = useApp();
+  const { app, mutate, toast, toastError } = useApp();
   const [title, setTitle] = useState('');
   const [priority, setPriority] = useState<'P0' | 'P1' | 'P2' | 'P3'>('P2');
   const [minutes, setMinutes] = useState(30);
@@ -260,7 +260,7 @@ function TaskForm({ onClose, onSaved, day }: { onClose: () => void; onSaved: () 
       toast('Задача создана и сразу сохранена.', 'ok');
       onSaved();
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
       setBusy(false);
     }
   };

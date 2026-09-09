@@ -5,7 +5,7 @@ import { useApp } from '../state/store';
 import { HORizons_RU } from '../lib/ru';
 
 export function Goals() {
-  const { app, version, mutate, toast } = useApp();
+  const { app, version, mutate, toast, toastError } = useApp();
   const [tree, setTree] = useState<GoalNode[] | null>(null);
   const [editing, setEditing] = useState<Goal | 'new' | null>(null);
   const [deleting, setDeleting] = useState<Goal | null>(null);
@@ -126,7 +126,7 @@ function GoalCard({ node, onEdit, onDelete }: { node: GoalNode; onEdit: () => vo
 }
 
 function GoalForm({ goal, allGoals, onClose, onSaved }: { goal: Goal | null; allGoals: GoalNode[]; onClose: () => void; onSaved: () => void }) {
-  const { app, mutate, toast } = useApp();
+  const { app, mutate, toast, toastError } = useApp();
   const [title, setTitle] = useState(goal?.title ?? '');
   const [description, setDescription] = useState(goal?.description ?? '');
   const [horizon, setHorizon] = useState<Goal['horizon']>(goal?.horizon ?? 'medium');
@@ -149,7 +149,7 @@ function GoalForm({ goal, allGoals, onClose, onSaved }: { goal: Goal | null; all
       toast(goal ? 'Цель обновлена. Изменение записано в историю стратегии.' : 'Цель создана.', 'ok');
       onSaved();
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
       setBusy(false);
     }
   };

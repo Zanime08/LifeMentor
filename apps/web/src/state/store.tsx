@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { LifeMentorApp, AuthState, SyncStatusView, Notification } from '@lifementor/core';
 import { bootstrapApp, resetAppPromise, SERVER_URL } from '../core/app';
+import { userError } from '../lib/errors';
 import { pollPendingNotifications } from '../push';
 
 export interface Toast { id: number; text: string; kind: 'info' | 'error' | 'ok' | 'warn' }
@@ -14,6 +15,8 @@ interface AppState {
   refresh: () => void;
   toasts: Toast[];
   toast: (text: string, kind?: Toast['kind']) => void;
+  /** toast a user-facing Russian message derived from an engine/server error */
+  toastError: (e: unknown) => void;
   dismissToast: (id: number) => void;
   online: boolean;
   auth: AuthState | null;
@@ -50,6 +53,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 5200);
   }, []);
   const dismissToast = useCallback((id: number) => setToasts((t) => t.filter((x) => x.id !== id)), []);
+  const toastError = useCallback((e: unknown) => {
+    // The precise internal message stays in the console for support/debugging.
+    if (e instanceof Error) console.warn('[lifementor] action failed:', e.message);
+    toast(userError(e), 'error');
+  }, [toast]);
 
   // ── bootstrap ────────────────────────────────────────────────────
   useEffect(() => {
@@ -145,13 +153,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (okText) toast(okText, 'ok');
       return result;
     } catch (error) {
-      const message = error && typeof error === 'object' && 'userMessage' in error
+      // Server-side errors carry their own user-facing copy (userMessage);
+      // everything else goes through the local mapper.
+      const userMessage = error && typeof error === 'object' && 'userMessage' in error
         ? String((error as { userMessage: unknown }).userMessage)
-        : error instanceof Error ? error.message : String(error);
-      toast(message, 'error');
+        : null;
+      if (userMessage) toast(userMessage, 'error');
+      else toastError(error);
       return null;
     }
-  }, [toast]);
+  }, [toast, toastError]);
 
   const hardReset = useCallback(async () => {
     await resetAppPromise();
@@ -170,11 +181,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo<AppState>(() => ({
-    app, loading, loadError, version, refresh, toasts, toast, dismissToast, online, auth, syncStatus,
+    app, loading, loadError, version, refresh, toasts, toast, toastError, dismissToast, online, auth, syncStatus,
     notifications,
     unreadCount: notifications.filter((n) => !n.read_at).length,
     mutate, hardReset, serverUrl: SERVER_URL,
-  }), [app, loading, loadError, version, refresh, toasts, toast, dismissToast, online, auth, syncStatus, notifications, mutate, hardReset]);
+  }), [app, loading, loadError, version, refresh, toasts, toast, toastError, dismissToast, online, auth, syncStatus, notifications, mutate, hardReset]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -5,7 +5,7 @@ import { useApp } from '../state/store';
 import { KIND_RU, fmtDayDow, hm, todayKey } from '../lib/ru';
 
 export function CalendarScreen() {
-  const { app, mutate, refresh } = useApp();
+  const { app, mutate, refresh, toastError } = useApp();
   const [cursor, setCursor] = useState(() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; });
   const [selected, setSelected] = useState(todayKey());
   const [events, setEvents] = useState<CalendarEvent[]>([]);
@@ -136,7 +136,7 @@ export function CalendarScreen() {
 }
 
 function EventForm({ day, event, onClose, onSaved }: { day: string; event: CalendarEvent | null; onClose: () => void; onSaved: () => void }) {
-  const { app, mutate, toast } = useApp();
+  const { app, mutate, toast, toastError } = useApp();
   const [title, setTitle] = useState(event?.title ?? '');
   const [kind, setKind] = useState<EventKind>(event?.kind ?? 'other');
   const [date, setDate] = useState(event?.day_key ?? day);
@@ -161,7 +161,7 @@ function EventForm({ day, event, onClose, onSaved }: { day: string; event: Calen
       toast(event ? 'Событие обновлено.' : 'Событие добавлено. Планировщик больше не займёт это время.', 'ok');
       onSaved();
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toastError(e);
     } finally {
       setBusy(false);
     }
