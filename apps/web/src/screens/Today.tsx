@@ -38,6 +38,22 @@ export function Today() {
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [app]);
   useEffect(() => { void load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
+  /**
+   * Reminders for a freshly built plan are secondary to the plan itself, but "secondary" is not
+   * "silent": a failed call here used to leave the user waiting for notifications that were never
+   * created. A blocked reminder (quiet hours, budget) is a decision, not an error — only a real
+   * failure says anything.
+   */
+  const scheduleReminders = async (p: DayPlan) => {
+    if (!app) return;
+    try {
+      await app.services.notifications.scheduleFromPlan(p);
+    } catch (error) {
+      console.warn('[lifementor] plan reminders failed (non-fatal):', error instanceof Error ? error.message : error);
+      toast('План построен, но напоминания по нему не поставились.', 'warn');
+    }
+  };
+
   const buildPlan = async () => {
     if (!app) return;
     setRebuilding(true);
@@ -45,7 +61,7 @@ export function Today() {
       // buildDay persists (one transaction) and returns the stored plan — persisting again here
       // used to abort the save with a duplicate-key error on task history.
       const p = await app.services.planner.buildDay(day);
-      try { await app.services.notifications.scheduleFromPlan(p); } catch { /* non-fatal */ }
+      await scheduleReminders(p);
       setPlan(p);
       await load();
       if (p.overload) toast('Внимание: день перегружен — часть задач перенесена. Смотрите список ниже.', 'warn');
@@ -62,7 +78,7 @@ export function Today() {
     setRebuilding(true);
     try {
       const p = await app.services.planner.rebuildRemainingDay();
-      try { await app.services.notifications.scheduleFromPlan(p); } catch { /* non-fatal */ }
+      await scheduleReminders(p);
       setPlan(p);
       await load();
       toast('Остаток дня пересобран: обязательства — прежде всего.', 'ok');

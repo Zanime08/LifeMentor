@@ -238,7 +238,12 @@ function historyToChat(history: Message[]): ChatMsg[] {
         try {
           const calls = JSON.parse(m.tool_calls) as { name: string }[];
           tools = calls.map((c) => ({ name: c.name, ok: true }));
-        } catch { tools = undefined; }
+        } catch (error) {
+          // The message itself is fine; only its tool chips are unreadable. Say so in the console
+          // rather than rendering a message that looks like it ran no tools at all.
+          console.warn('[lifementor] tool list failed (non-fatal):', error instanceof Error ? error.message : error);
+          tools = undefined;
+        }
       }
       out.push({ id: m.id, role: 'assistant', text: m.content, tools });
     }

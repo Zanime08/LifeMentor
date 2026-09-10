@@ -159,7 +159,10 @@ wrote).
        check failed into "no overlaps" — an unknown answer now asks for the same explicit
        confirmation a real overlap does, because the planner will refuse that slot later and the
        user would never learn why. Deliberately non-fatal work (a chat draft, the last screen, FCM
-       registration) goes through `bestEffort`, which logs instead of vanishing.
+       registration) goes through `bestEffort`, which logs instead of vanishing — and a plan whose
+       reminders could not be created now says so, instead of leaving the user waiting for
+       notifications that will never arrive (a reminder *blocked* by quiet hours or the daily budget
+       stays silent on purpose: that is a decision, not a failure).
        `apps/web/test/load-failure.test.tsx` fails on any new silent catch in the client and pins the
        behaviour of both helpers.
      * **the engine's diagnostics were shown raw, in English**: the strategy connectivity audit
