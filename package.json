@@ -1,6 +1,6 @@
 {
   "name": "lifementor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "LifeMentor — AI Personal Development Operating System (Windows + Android, local-first SQLite, cloud sync)",

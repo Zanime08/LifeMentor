@@ -1,6 +1,6 @@
 {
   "name": "@lifementor/desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "LifeMentor Windows shell (Tauri 2). Packages the shared @lifementor/web bundle; native SQLite (rusqlite) on the Rust side.",

@@ -12,7 +12,7 @@ import { PushService } from './services/push';
 import { CloudBackupStore } from './services/cloud-backup';
 
 export const SERVER_NAME = 'lifementor-server';
-export const SERVER_VERSION = '0.1.0';
+export const SERVER_VERSION = '0.1.1';
 
 /**
  * Everything the HTTP layer needs, wired once at startup.
