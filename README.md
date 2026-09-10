@@ -52,7 +52,7 @@ docs/            Проектирование: продуктовая специ
 
 ```bash
 npm install            # зависимости (workspace: core, server, web, mobile, desktop)
-npm test               # 169 автотестов (core + server + web bootstrap + UI-сквозные сценарии
+npm test               # 171 автотестов (core + server + web bootstrap + UI-сквозные сценарии
                        # + контракты драйверов Tauri/Capacitor)
 
 npm run dev --workspace @lifementor/server   # API на :8787

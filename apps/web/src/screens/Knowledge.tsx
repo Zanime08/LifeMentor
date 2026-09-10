@@ -23,9 +23,12 @@ export function Knowledge() {
     return () => { stop = true; };
   }, [app, version]);
 
-  if (!map) return <Spinner label="Строю карту знаний…" />;
+  // The layout must be computed before the early return below: a hook after a conditional return
+  // changes the hook order between the loading render and the loaded one, which React answers with
+  // "Rendered more hooks than during the previous render" — the screen never appeared at all.
+  const layout = useMemo(() => (map ? layoutNodes(map) : null), [map]);
 
-  const layout = useMemo(() => layoutNodes(map), [map]);
+  if (!map || !layout) return <Spinner label="Строю карту знаний…" />;
 
   return (
     <div>
@@ -137,18 +140,40 @@ function layoutNodes(map: KnowledgeMap): { nodes: LaidNode[]; edges: LaidEdge[];
   return { nodes: out, edges, width: 120 + rows.length * colW, height: 90 + maxRows * 64 };
 }
 
+const RELATION_RU: Record<string, string> = {
+  related: 'связано', prerequisite: 'предшествует', part_of: 'часть', applies: 'применяется',
+};
+
 function NodeDetail({ node, map, onClose }: { node: KnowledgeNode; map: KnowledgeMap; onClose: () => void }) {
   const { app, mutate, toast } = useApp();
   const [status, setStatus] = useState<KnowledgeNode['status']>(node.status);
   const [mastery, setMastery] = useState(node.mastery);
+  const [linkTo, setLinkTo] = useState('');
+  const [relation, setRelation] = useState<'related' | 'prerequisite' | 'part_of' | 'applies'>('related');
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const related = map.relations.filter((r) => r.from_node_id === node.id || r.to_node_id === node.id);
+  const candidates = map.nodes.filter((n) => n.id !== node.id);
+  // Confirmation lives inside this dialog, not in a second modal on top of it: escape and the
+  // focus trap belong to exactly one dialog at a time.
   return (
     <Modal title={node.title} onClose={onClose} footer={
       <>
+        <Btn kind="ghost" aria-label="Удалить узел" title="Удалить узел" onClick={() => setConfirmDelete(true)} disabled={confirmDelete}>{I.trash}</Btn>
+        <span className="grow" />
         <Btn onClick={onClose}>Закрыть</Btn>
         <Btn kind="primary" onClick={() => void mutate(() => app!.services.knowledge.updateNode(node.id, { status, mastery }), 'Узел обновлён').then(() => onClose())}>Сохранить</Btn>
       </>
     }>
+      {confirmDelete && (
+        <div className="proactive" style={{ background: 'var(--danger-soft, #fbeaea)', borderColor: '#e5b4b4' }}>
+          <b>Удалить узел «{node.title}»?</b>
+          <div className="small mt-sm">Он исчезнет из карты, и его связи перестанут отображаться. Уже освоенное знание останется в истории изменений.</div>
+          <div className="row mt-sm" style={{ gap: 8 }}>
+            <Btn kind="danger" size="sm" onClick={() => void mutate(() => app!.services.knowledge.removeNode(node.id), 'Узел удалён из карты').then((ok) => { if (ok) onClose(); })}>Удалить навсегда</Btn>
+            <Btn size="sm" onClick={() => setConfirmDelete(false)}>Оставить</Btn>
+          </div>
+        </div>
+      )}
       {node.summary && <p className="small muted mb-sm">{node.summary}</p>}
       <div className="row wrap" style={{ gap: 10 }}>
         <Field label="Статус">
@@ -173,8 +198,27 @@ function NodeDetail({ node, map, onClose }: { node: KnowledgeNode; map: Knowledg
           </div>
         );
       })}
+      {candidates.length > 0 && (
+        <div className="row wrap mt-sm" style={{ gap: 8 }}>
+          <Select value={linkTo} onChange={(e) => setLinkTo(e.target.value)} style={{ flex: 1, minWidth: 150 }}>
+            <option value="">К какому узлу…</option>
+            {candidates.map((n) => <option key={n.id} value={n.id}>{n.title}</option>)}
+          </Select>
+          <Select value={relation} onChange={(e) => setRelation(e.target.value as never)} style={{ width: 150 }}>
+            {Object.entries(RELATION_RU).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </Select>
+          <Btn
+            size="sm"
+            disabled={!linkTo}
+            onClick={() => void mutate(
+              () => app!.services.knowledge.relate({ from_node_id: node.id, to_node_id: linkTo, relation, weight: 0.5 }),
+              'Связь добавлена в карту',
+            ).then((r) => { if (r) { setLinkTo(''); toast('Карта обновлена: узлы теперь связаны.', 'ok'); } })}
+          >Связать</Btn>
+        </div>
+      )}
       <div className="mt-sm small muted" onClick={() => toast('Узлы и связи обновляются из обучения, навыков и onboarding.', 'info')}>
-        Карта пополняется автоматически: из путей обучения, навыков и интересов.
+        Карта пополняется автоматически: из путей обучения, навыков и интересов — и вручную здесь.
       </div>
     </Modal>
   );

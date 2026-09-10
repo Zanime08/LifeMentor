@@ -317,6 +317,50 @@ describe('first run in the browser client (dom, real engine)', () => {
     expect(await screen.findByText(/дедлайн \d{4}-\d{2}-\d{2} · готово 0%/, {}, { timeout: 20_000 })).toBeTruthy();
   }, 120_000);
 
+  it('lets the user connect and remove knowledge nodes (req. 47–49)', async () => {
+    window.location.hash = '#/today';
+    render(<App />);
+    await waitFor(() => expect(openApp()).not.toBeNull(), { timeout: 30_000 });
+    const app = openApp()!;
+    await app.services.knowledge.addNode({ title: 'HTTP/REST', domain: 'backend' });
+    await app.services.knowledge.addNode({ title: 'SQL и индексы', domain: 'backend' });
+
+    // The map was add-only: nodes could be created and edited, but a wrong node could never be
+    // removed and no two nodes could ever be connected by hand.
+    window.location.hash = '#/knowledge';
+    const svg = await waitFor(() => {
+      const el = document.querySelector('.kmap');
+      if (!el) throw new Error('карта ещё не построена');
+      return el as unknown as HTMLElement;
+    }, { timeout: 30_000 });
+    fireEvent.click(within(svg).getByText('HTTP/REST'));
+
+    const modal = document.querySelector('.modal') as HTMLElement;
+    const selects = [...modal.querySelectorAll<HTMLSelectElement>('select')];
+    const nodeSelect = selects.find((s) => s.querySelector('option')?.textContent === 'К какому узлу…');
+    const relationSelect = selects.find((s) => s.querySelector('option')?.textContent === 'связано');
+    expect(nodeSelect, 'форма связи есть в карточке узла').toBeTruthy();
+    const target = [...nodeSelect!.querySelectorAll('option')].find((o) => o.textContent === 'SQL и индексы');
+    expect(target).toBeTruthy();
+    fireEvent.change(nodeSelect!, { target: { value: target!.value } });
+    fireEvent.change(relationSelect!, { target: { value: 'prerequisite' } });
+    await user.click(within(modal).getByRole('button', { name: 'Связать' }));
+
+    await waitFor(async () => {
+      const map = await openApp()!.services.knowledge.map();
+      expect(map.relations.some((r) => r.relation === 'prerequisite')).toBe(true);
+    }, { timeout: 20_000 });
+    expect((await within(modal).findAllByText(/предшествует/)).length).toBeGreaterThan(0);
+
+    // Removing is a two-step inside the same dialog — never a second modal on top of it.
+    await user.click(within(modal).getByRole('button', { name: 'Удалить узел' }));
+    await user.click(await within(modal).findByRole('button', { name: 'Удалить навсегда' }));
+    await waitFor(async () => {
+      const map = await openApp()!.services.knowledge.map();
+      expect(map.nodes.some((n) => n.title === 'HTTP/REST')).toBe(false);
+    }, { timeout: 20_000 });
+  }, 180_000);
+
   it('drives the strategy ladder: add a direction, close it with a reason, keep the history (req. 45, 46, 79–81)', async () => {
     // The strategy engine (horizons, option comparison, immutable change history) had no screen at
     // all: implemented in phase 7 and unreachable from the UI. This walks the screen a user gets.
@@ -438,6 +482,27 @@ describe('first run in the browser client (dom, real engine)', () => {
     await waitFor(async () => {
       expect(await openApp()!.services.recovery.readDraft('mentor')).toBeNull();
     }, { timeout: 20_000 });
+  }, 180_000);
+
+  it('opens every screen of the app without a crash (req. 68, 95)', async () => {
+    // A sweep, not a deep test: it visits every route the sidebar offers. This is what caught the
+    // Knowledge screen dying with "Rendered more hooks than during the previous render" — a hook
+    // declared after an early return meant the screen never rendered at all outside the loading
+    // spinner. Errors land in `uncaught` and are asserted by the test below.
+    const routes = [
+      '/dashboard', '/mentor', '/today', '/calendar', '/goals', '/learning', '/projects',
+      '/skills', '/knowledge', '/news', '/strategy', '/progress', '/profile', '/settings',
+    ];
+    window.location.hash = '#/dashboard';
+    render(<App />);
+    await waitFor(() => expect(document.querySelector('.shell')).toBeTruthy(), { timeout: 30_000 });
+    for (const route of routes) {
+      window.location.hash = `#${route}`;
+      // Every screen renders inside the shell; give its data-loading effects a chance to settle.
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(document.querySelector('.shell'), `экран ${route}`).toBeTruthy();
+    }
+    expect(uncaught, `во время обхода экранов: ${uncaught.join(' | ')}`).toEqual([]);
   }, 180_000);
 
   it('never let a single uncaught error reach the window (req. 68, 95)', () => {
