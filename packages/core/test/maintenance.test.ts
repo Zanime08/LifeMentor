@@ -176,6 +176,28 @@ describe('daily maintenance (req. 11, 16, 70, 77, 78)', () => {
     await app.close();
   });
 
+  it('the Progress «Снепшот дня» contract: today is saved only when it has content', async () => {
+    const app = await openApp();
+    const today = dayKey();
+
+    // An empty day is not snapshotted: the screen says "nothing to save yet" instead of writing
+    // an empty stub and claiming success (the button used to call ensureUpToDate(), which only
+    // backfills missed days and skips today entirely).
+    expect(await app.services.snapshots.createIfActive(today)).toBeNull();
+    expect(await app.repos.dailySnapshots.count({})).toBe(0);
+
+    // After real work the same call stores today, and calling it again refreshes the same row.
+    await workedOn(app, today, 'Реальная работа');
+    const first = await app.services.snapshots.createIfActive(today);
+    expect(first).not.toBeNull();
+    expect(first!.summary?.length ?? 0).toBeGreaterThan(0);
+    const second = await app.services.snapshots.createIfActive(today);
+    expect(second).not.toBeNull();
+    expect(second!.id).toBe(first!.id);
+    expect(await app.repos.dailySnapshots.count({})).toBe(1);
+    await app.close();
+  });
+
   it('takes at most one automatic backup a day and rotates the old ones (req. 16)', async () => {
     const app = await openApp();
     const today = dayKey();

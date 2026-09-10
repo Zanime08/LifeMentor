@@ -6,7 +6,6 @@ import { Btn, Field, I, Spinner, TextArea, TextInput, Tag } from '../components/
 import { userError } from '../lib/errors';
 import { useApp } from '../state/store';
 import { BLOCK_RU, GAP_TYPE_RU, Q_RU, SECTION_RU, optRu } from '../lib/onboarding-ru';
-import { todayKey } from '../lib/ru';
 
 type Stage = 'welcome' | 'questionnaire' | 'analysis' | 'interview' | 'preview' | 'goals';
 
@@ -68,7 +67,7 @@ export function Onboarding() {
             <Preview onDone={() => setStage('goals')} toast={toast} mutate={mutate} />
           )}
           {stage === 'goals' && app && (
-            <GoalsStep onDone={() => void finishAll(app, toast).then(() => navigate('/dashboard'))} />
+            <GoalsStep onDone={() => navigate('/dashboard')} />
           )}
         </div>
         <p className="xsmall muted mt-sm" style={{ textAlign: 'center' }}>
@@ -491,9 +490,3 @@ function GoalsStep({ onDone }: { onDone: () => void }) {
   );
 }
 
-async function finishAll(app: import('@lifementor/core').LifeMentorApp, _toast: unknown): Promise<void> {
-  // no-op: completion happens inside GoalsStep
-  void app; void _toast;
-}
-
-export function onboardingTodayKey() { return todayKey(); }
