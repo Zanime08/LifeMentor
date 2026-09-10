@@ -121,8 +121,10 @@ event that the planner never schedules over, and a restart that keeps every conf
        <Spinner/>` early return, so the loading render and the loaded render had different hook
        counts — React answered with "Rendered more hooks than during the previous render" and the
        screen stayed a spinner forever. Found the moment a test actually opened the screen; fixed by
-       hoisting the memo (this is also why the suite now sweeps every route: an unvisited screen can
-       be broken and nobody notices).
+       hoisting the memo. The suite now sweeps every route and demands each screen's own heading (or
+       the chat's input box) inside `.content` — «the shell is there» is not enough, because a screen
+       stuck on its loading spinner keeps the shell. The sweep was verified by re-introducing the
+       bug: it fails with «экран /knowledge: не найден заголовок».
      * **the knowledge map was add-only**: nodes could be created and edited, but a mistaken node
        could never be removed (`knowledge.removeNode`) and no two nodes could be connected by hand
        (`knowledge.relate`) — the ring of «связи» was read-only. The node card now links it to

@@ -489,18 +489,34 @@ describe('first run in the browser client (dom, real engine)', () => {
     // Knowledge screen dying with "Rendered more hooks than during the previous render" — a hook
     // declared after an early return meant the screen never rendered at all outside the loading
     // spinner. Errors land in `uncaught` and are asserted by the test below.
-    const routes = [
-      '/dashboard', '/mentor', '/today', '/calendar', '/goals', '/learning', '/projects',
-      '/skills', '/knowledge', '/news', '/strategy', '/progress', '/profile', '/settings',
+    // Each screen must print its own heading (or, for the chat, its own input) inside `.content` —
+    // "the shell is there" is not enough: a screen stuck on its loading spinner keeps the shell.
+    // The spinners say «Загружаю проекты…», so the markers below cannot match them by accident.
+    const contentText = () => (document.querySelector('.content')?.textContent ?? '').replace(/\s+/g, ' ');
+    const heading = (text: RegExp) => () => text.test(contentText());
+    const screens: { route: string; ok: () => boolean; what: string }[] = [
+      { route: '/dashboard', ok: heading(/👋/), what: 'приветствие' },
+      // The chat's marker is a placeholder attribute, so it is not part of textContent.
+      { route: '/mentor', ok: () => !!document.querySelector('.content textarea[placeholder^="Например: завтра в 15:00"]'), what: 'поле ввода' },
+      { route: '/today', ok: heading(/Сегодня/), what: 'заголовок' },
+      { route: '/calendar', ok: heading(/Календарь/), what: 'заголовок' },
+      { route: '/goals', ok: heading(/Цели/), what: 'заголовок' },
+      { route: '/learning', ok: heading(/Обучение/), what: 'заголовок' },
+      { route: '/projects', ok: heading(/Проекты/), what: 'заголовок' },
+      { route: '/skills', ok: heading(/Навыки/), what: 'заголовок' },
+      { route: '/knowledge', ok: heading(/Карта знаний/), what: 'заголовок' },
+      { route: '/news', ok: heading(/Новости/), what: 'заголовок' },
+      { route: '/strategy', ok: heading(/Стратегия/), what: 'заголовок' },
+      { route: '/progress', ok: heading(/Прогресс/), what: 'заголовок' },
+      { route: '/profile', ok: heading(/Мой профиль/), what: 'заголовок' },
+      { route: '/settings', ok: heading(/Настройки/), what: 'заголовок' },
     ];
     window.location.hash = '#/dashboard';
     render(<App />);
     await waitFor(() => expect(document.querySelector('.shell')).toBeTruthy(), { timeout: 30_000 });
-    for (const route of routes) {
+    for (const { route, ok, what } of screens) {
       window.location.hash = `#${route}`;
-      // Every screen renders inside the shell; give its data-loading effects a chance to settle.
-      await new Promise((resolve) => setTimeout(resolve, 120));
-      expect(document.querySelector('.shell'), `экран ${route}`).toBeTruthy();
+      await waitFor(() => expect(ok(), `экран ${route}: не найден ${what}`).toBe(true), { timeout: 20_000 });
     }
     expect(uncaught, `во время обхода экранов: ${uncaught.join(' | ')}`).toEqual([]);
   }, 180_000);
