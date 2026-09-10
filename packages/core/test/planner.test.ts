@@ -59,6 +59,36 @@ async function seed(app: LifeMentorApp, titles: string[], minutes = 60): Promise
 }
 
 describe('daily planner', () => {
+  it('re-building an unchanged plan writes nothing: no version bump, no change log, no sync queue', async () => {
+    const app = await openApp();
+    const day = dayKey();
+    const ids = await seed(app, ['Write the chapter', 'Practise English']);
+
+    const first = await app.services.planner.buildDay(day);
+    const versions = new Map<string, number>();
+    for (const id of ids) versions.set(id, (await app.repos.tasks.byId(id))!.version);
+    const logRows = await app.repos.changeLog.count({});
+    const queueRows = await app.repos.syncQueue.count({});
+    const historyRows = await app.repos.taskHistory.count({});
+
+    // The dashboard builds today's plan on every visit, and the Today screen on every navigation.
+    // The second build must be a read, not a rewrite: otherwise every screen visit bumps versions,
+    // writes change-log rows and queues sync operations for a schedule that did not change.
+    const second = await app.services.planner.buildDay(day);
+    expect(second.slots.map((s) => [s.taskId, s.start, s.end])).toEqual(first.slots.map((s) => [s.taskId, s.start, s.end]));
+    for (const id of ids) expect((await app.repos.tasks.byId(id))!.version, `task ${id} was rewritten`).toBe(versions.get(id));
+    expect(await app.repos.changeLog.count({})).toBe(logRows);
+    expect(await app.repos.syncQueue.count({})).toBe(queueRows);
+    expect(await app.repos.taskHistory.count({})).toBe(historyRows);
+
+    // A real change (the user moves the day / a task grows) is still written.
+    await app.services.tasks.update(ids[0], { estimated_minutes: 180 });
+    const third = await app.services.planner.buildDay(day);
+    expect((await app.repos.tasks.byId(ids[0]))!.version).toBeGreaterThan(versions.get(ids[0])!);
+    expect(third.slots.length).toBeGreaterThan(0);
+    await app.close();
+  });
+
   it('persists a plan and never writes the same history row twice (idempotent re-planning)', async () => {
     const app = await openApp();
     const day = dayKey();

@@ -23,7 +23,7 @@ Android.
 ## Репозиторий (monorepo, npm workspaces)
 
 ```
-packages/core/   Движок: SQLite-схема (49 таблиц), драйверы (node:sqlite, sql.js/WASM, Tauri,
+packages/core/   Движок: SQLite-схема (50 таблиц в клиенте + 12 на сервере), драйверы (node:sqlite, sql.js/WASM, Tauri,
                  Capacitor), репозитории, сервисы (goals, tasks, calendar, projects, skills,
                  learning, knowledge, memory, context, news, notifications, progress, sync,
                  backup, recovery, auth, onboarding, planner, strategy), ИИ-оркестратор +
@@ -52,7 +52,7 @@ docs/            Проектирование: продуктовая специ
 
 ```bash
 npm install            # зависимости (workspace: core, server, web, mobile, desktop)
-npm test               # 148 автотестов (core + server + web bootstrap + UI-сквозные сценарии
+npm test               # 149 автотестов (core + server + web bootstrap + UI-сквозные сценарии
                        # + контракты драйверов Tauri/Capacitor)
 
 npm run dev --workspace @lifementor/server   # API на :8787

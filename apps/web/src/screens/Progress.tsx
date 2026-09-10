@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import type { DailySnapshot, DayMetrics, MonthlyReview, WeeklyReview } from '@lifementor/core';
 import { Btn, Card, Empty, PageHead, Spinner, Tag, BarChart } from '../components/ui';
 import { useApp } from '../state/store';
-import { fmtDay, fmtDayShort, fmtMinutes, timeAgo } from '../lib/ru';
+import { fmtDay, fmtDayShort, fmtMinutes, timeAgo, todayKey } from '../lib/ru';
 
 export function ProgressScreen() {
   const { app, version, mutate, toast, toastError } = useApp();
@@ -70,9 +70,17 @@ export function ProgressScreen() {
     if (!app) return;
     setBusy('snapshot');
     try {
-      const r = await app.services.snapshots.ensureUpToDate();
-      toast(r.skipped ? 'Снепшот на сегодня уже создан.' : 'Снепшот дня создан (автоматически создаётся и в конце дня).', 'ok');
+      // `ensureUpToDate()` only backfills *missed* days and deliberately skips today (a snapshot
+      // in the morning would be an empty stub). The button promises today's snapshot, so it is
+      // created explicitly — and only when the day actually has something to record.
+      const missed = await app.services.snapshots.ensureUpToDate();
+      const today = todayKey();
+      const existing = await app.services.snapshots.get(today);
+      const saved = await app.services.snapshots.createIfActive(today);
       setSnapshots(await app.services.snapshots.list(30));
+      if (saved) toast(existing ? 'Снепшот дня обновлён по текущим данным.' : 'Снепшот дня создан.', 'ok');
+      else if (missed.created.length > 0) toast(`Восстановлены пропущенные дни: ${missed.created.length}.`, 'ok');
+      else toast('Сегодня пока нечего сохранять: снепшот дня появится автоматически в конце дня, если были задачи или события.', 'warn');
     } catch (e) {
       toastError(e);
     } finally {

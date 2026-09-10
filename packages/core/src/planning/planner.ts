@@ -11,6 +11,30 @@ import type { PersonalizationService } from '../services/personalization';
 import { dayKey, daysUntil, minutesToTime, nowIso, timeToMinutes } from '../util/time';
 import { createLogger } from '../util/logging';
 
+/**
+ * The stored day plan is compared ignoring `generated_at`: rebuilding an unchanged day must be a
+ * read. Returns the timestamp of the stored plan so the caller can hand back exactly what is in
+ * the database.
+ */
+function planGeneratedAt(json: string): string | null {
+  try {
+    const parsed = JSON.parse(json) as { generated_at?: unknown };
+    return typeof parsed.generated_at === 'string' ? parsed.generated_at : null;
+  } catch { return null; }
+}
+
+function planEqualsIgnoringTimestamp(a: string, b: string): boolean {
+  const strip = (json: string): string | null => {
+    try {
+      const parsed = JSON.parse(json) as Record<string, unknown>;
+      delete parsed.generated_at;
+      return JSON.stringify(parsed);
+    } catch { return null; }
+  };
+  const left = strip(a);
+  return left !== null && left === strip(b);
+}
+
 export interface PlannerDeps {
   repos: Repos;
   calendar: CalendarService;
@@ -263,13 +287,21 @@ export class PlannerService {
         if (slot.kind !== 'task' || !slot.taskId) continue;
         const task = await repos.tasks.byId(slot.taskId);
         if (!task || task.status === 'done' || task.status === 'cancelled') continue;
-        const next = await repos.tasks.update(slot.taskId, {
+        // The dashboard builds today's plan on every visit. Writing the same slot back would bump
+        // `version`, stamp a new `updated_at` and queue a sync operation each time — which is both
+        // noise in the change log and a real conflict hazard between two devices. An unchanged
+        // slot is left exactly as it is.
+        const unchanged = task.scheduled_date === day
+          && task.scheduled_start === slot.start
+          && task.scheduled_end === slot.end
+          && task.status === 'scheduled';
+        const next = unchanged ? task : await repos.tasks.update(slot.taskId, {
           scheduled_date: day,
           scheduled_start: slot.start,
           scheduled_end: slot.end,
           status: 'scheduled',
         } as never, { ...ctx, reason: 'scheduled by daily planner' });
-        if (next) {
+        if (next && !unchanged) {
           // Keep the persisted plan honest: a slot whose task is no longer writable must not be
           // shown as work that was placed.
           const index = slots.findIndex((s) => s.taskId === slot.taskId);
@@ -294,11 +326,20 @@ export class PlannerService {
     });
     // Read back through the same planner so the UI, the AI context and the next restart all see
     // the schedule that is actually in the database (a task can be completed while we write).
-    const stored = await this.snapshotFromDb(day, slots, deferred, plan);
+    let stored = await this.snapshotFromDb(day, slots, deferred, plan);
+    // `generated_at` moves on every call, so the cached plan is compared without it: when the
+    // schedule, the totals and the warnings are identical, the plan that is already stored is
+    // still the current one. The dashboard builds today's plan on every visit — rewriting the row
+    // each time would also write a change-log entry each time.
+    const cached = await repos.appState.byId('last_day_plan');
+    const cachedAt = cached?.value ? planGeneratedAt(cached.value) : null;
+    if (cachedAt && planEqualsIgnoringTimestamp(cached!.value, JSON.stringify(stored))) {
+      stored = { ...stored, generated_at: cachedAt };
+      return stored;
+    }
     await repos.db.transaction(async () => {
       const value = JSON.stringify(stored);
-      const existing = await repos.appState.byId('last_day_plan');
-      if (existing) await repos.appState.update('last_day_plan', { value, updated_at: nowIso() } as never);
+      if (cached) await repos.appState.update('last_day_plan', { value, updated_at: nowIso() } as never);
       else await repos.appState.insert({ key: 'last_day_plan', value, updated_at: nowIso() } as never);
     });
     return stored;
