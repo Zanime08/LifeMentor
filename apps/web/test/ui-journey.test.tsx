@@ -265,6 +265,39 @@ describe('first run in the browser client (dom, real engine)', () => {
     expect(screen.getAllByText('Экзамен по математике').length).toBeGreaterThan(0);
   }, 120_000);
 
+  it('never books an overlap silently: the event form says what it collides with (req. 31, 82, 83)', async () => {
+    const today = dayKey();
+
+    window.location.hash = '#/calendar';
+    render(<App />);
+    await user.click(await button(/Событие$/));
+    const modal = document.querySelector('.modal') as HTMLElement;
+    await user.type(within(modal).getByPlaceholderText(/Экзамен, встреча, дорога/), 'Консультация с научным руководителем');
+    const [dateInput, startInput, endInput] = [
+      ...modal.querySelectorAll<HTMLInputElement>('input[type="date"], input[type="time"]'),
+    ];
+    fireEvent.change(dateInput, { target: { value: today } });
+    // 14:30–15:30 runs into the exam (14:00–15:00) created by the previous test.
+    fireEvent.change(startInput, { target: { value: '14:30' } });
+    fireEvent.change(endInput, { target: { value: '15:30' } });
+
+    // The form says it out loud, naming the event it would sit on top of.
+    expect(await within(modal).findByText(/Время пересекается/, {}, { timeout: 20_000 })).toBeTruthy();
+    expect(within(modal).getByText(/Экзамен по математике/)).toBeTruthy();
+
+    // The first click only warns: nothing is written yet.
+    const before = (await openApp()!.services.calendar.listDay(today)).length;
+    await user.click(within(modal).getByRole('button', { name: 'Сохранить' }));
+    expect((await openApp()!.services.calendar.listDay(today)).length).toBe(before);
+
+    // The second click is explicit consent, and then it is saved.
+    await user.click(await within(modal).findByRole('button', { name: 'Сохранить всё равно' }));
+    await waitFor(async () => {
+      const events = await openApp()!.services.calendar.listDay(today);
+      expect(events.some((e) => e.title === 'Консультация с научным руководителем')).toBe(true);
+    }, { timeout: 20_000 });
+  }, 120_000);
+
   it('drives the strategy ladder: add a direction, close it with a reason, keep the history (req. 45, 46, 79–81)', async () => {
     // The strategy engine (horizons, option comparison, immutable change history) had no screen at
     // all: implemented in phase 7 and unreachable from the UI. This walks the screen a user gets.

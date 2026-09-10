@@ -4,6 +4,12 @@ import { Btn, Confirm, Empty, Field, I, Modal, PageHead, Select, Spinner, Tag, T
 import { useApp } from '../state/store';
 import { KIND_RU, fmtDayDow, hm, todayKey } from '../lib/ru';
 
+/** 'HH:MM' → minutes since midnight (the planner's unit). */
+function toMin(time: string): number {
+  const [h, m] = time.split(':').map((n) => Number(n));
+  return (h || 0) * 60 + (m || 0);
+}
+
 export function CalendarScreen() {
   const { app, mutate, refresh, toastError } = useApp();
   const [cursor, setCursor] = useState(() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; });
@@ -147,9 +153,31 @@ function EventForm({ day, event, onClose, onSaved }: { day: string; event: Calen
   const [location, setLocation] = useState(event?.location ?? '');
   const [notes, setNotes] = useState(event?.notes ?? '');
   const [busy, setBusy] = useState(false);
+  const [conflicts, setConflicts] = useState<CalendarEvent[]>([]);
+  const [acknowledged, setAcknowledged] = useState(false);
+
+  const startMin = allDay ? 0 : toMin(start);
+  const endMin = allDay ? 24 * 60 : toMin(end);
+
+  // Live overlap warning (req. 31, 82, 83). The planner refuses to place work inside a fixed slot,
+  // so an unnoticed double booking used to surface later as "no free time today" with no hint why.
+  useEffect(() => {
+    if (!app || !date || (!allDay && endMin <= startMin)) { setConflicts([]); return; }
+    let stop = false;
+    const timer = window.setTimeout(() => {
+      app.services.calendar.findConflicts(date, startMin, endMin, event?.id)
+        .then((found) => { if (!stop) setConflicts(found); })
+        .catch(() => { if (!stop) setConflicts([]); });
+    }, 250);
+    setAcknowledged(false);
+    return () => { stop = true; window.clearTimeout(timer); };
+  }, [app, date, startMin, endMin, allDay, event?.id]);
 
   const save = async () => {
-    if (!app || !title.trim()) return;
+    if (!app || !title.trim() || busy) return;
+    // Never write an overlap silently: the first click shows what it collides with, the second —
+    // explicit — one saves it. Overlapping immovable events are a legitimate real-life input.
+    if (conflicts.length && !acknowledged) { setAcknowledged(true); return; }
     setBusy(true);
     try {
       const payload = {
@@ -171,10 +199,26 @@ function EventForm({ day, event, onClose, onSaved }: { day: string; event: Calen
     <Modal title={event ? 'Изменить событие' : 'Новое событие'} onClose={onClose} footer={
       <>
         <Btn onClick={onClose}>Отмена</Btn>
-        <Btn kind="primary" onClick={() => void save()} disabled={busy || !title.trim()}>Сохранить</Btn>
+        <Btn kind="primary" onClick={() => void save()} disabled={busy || !title.trim()}>
+          {conflicts.length && !acknowledged ? 'Сохранить' : acknowledged && conflicts.length ? 'Сохранить всё равно' : 'Сохранить'}
+        </Btn>
       </>
     }>
       <Field label="Название"><TextInput value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Экзамен, встреча, дорога…" autoFocus /></Field>
+      {conflicts.length > 0 && (
+        <div className="proactive" style={{ background: 'var(--gold-soft)', borderColor: '#e4d3a1' }}>
+          <b>Время пересекается с {conflicts.length > 1 ? 'событиями' : 'событием'}:</b>
+          {conflicts.map((e) => (
+            <div key={e.id} className="small mt-sm">
+              • «{e.title}» — {e.all_day ? 'весь день' : `${hm(e.starts_at)}–${hm(e.ends_at)}`} ({KIND_RU[e.kind] ?? e.kind})
+            </div>
+          ))}
+          <div className="xsmall muted mt-sm">
+            Планировщик не поставит работу в пересекающееся время — оно останется занятым. Можно сохранить,
+            если так и задумано.
+          </div>
+        </div>
+      )}
       <div className="row wrap" style={{ gap: 10 }}>
         <Field label="Тип" optional>
           <Select value={kind} onChange={(e) => setKind(e.target.value as EventKind)} style={{ width: 150 }}>
