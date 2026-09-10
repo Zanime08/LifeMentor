@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { FieldDiff, LifeMentorApp, SyncConflict } from '@lifementor/core';
+import type { FieldDiff, LifeMentorApp, RecoveryReport, SyncConflict } from '@lifementor/core';
 import { Btn, Card, Confirm, Field, I, Modal, PageHead, Select, Spinner, Tag, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
 import { SERVER_URL_STORAGE_KEY } from '../core/app';
@@ -569,12 +569,87 @@ function PrivacyTab() {
 }
 
 /* ── diagnostics ────────────────────────────────────────────────────── */
+/**
+ * The startup recovery sequence (req. 13) used to vanish into the console: the engine repaired what
+ * it could, reported leftovers — «these tasks were still in progress when the app closed, did you
+ * finish them?» — and the user never saw any of it. This shows the report and can re-run it.
+ */
+function RecoveryCard() {
+  const { app, toast, toastError, refresh } = useApp();
+  const [report, setReport] = useState<RecoveryReport | null>(app?.recoveryReport ?? null);
+  const [running, setRunning] = useState(false);
+  const run = async () => {
+    if (!app || running) return;
+    setRunning(true);
+    try {
+      const next = await app.services.recovery.startup();
+      setReport(next);
+      refresh();
+      toast(next.ok ? 'Проверка завершена: всё в порядке' : 'Проверка завершена — есть замечания', next.ok ? 'ok' : 'warn');
+    } catch (error) {
+      toastError(error);
+    } finally {
+      setRunning(false);
+    }
+  };
+  const tone = (status: RecoveryReport['actions'][number]['status']) =>
+    status === 'ok' ? 'green' : status === 'repaired' ? 'gold' : status === 'failed' ? 'danger' : 'outline';
+  const issueTone = (severity: RecoveryReport['issues'][number]['severity']) =>
+    severity === 'critical' ? 'danger' : severity === 'warning' ? 'gold' : 'outline';
+  return (
+    <Card
+      title="Восстановление после сбоя"
+      action={<Btn size="xs" disabled={running} onClick={() => void run()}>{running ? 'Проверяю…' : 'Проверить сейчас'}</Btn>}
+    >
+      {!report ? (
+        <p className="muted small">Проверка ещё не выполнялась в этой сессии.</p>
+      ) : (
+        <>
+          <div className="kv">
+            <dt>Итог</dt>
+            <dd style={{ color: report.ok ? 'var(--accent)' : 'var(--danger)' }}>
+              {report.ok ? 'целостность в порядке' : 'нужно ваше внимание'}
+            </dd>
+            <dt>Когда</dt><dd>{timeAgo(report.finishedAt)} · {report.durationMs} мс</dd>
+            <dt>Последний экран</dt><dd>{report.state.lastRoute ?? '—'}</dd>
+            <dt>Черновики</dt><dd>{Object.keys(report.state.drafts).length}</dd>
+          </div>
+          <div className="section-title">Шаги проверки</div>
+          {report.actions.map((a, i) => (
+            <div className="row wrap" key={`${a.step}-${i}`} style={{ gap: 8, padding: '2px 0' }}>
+              <Tag tone={tone(a.status)}>{a.status}</Tag>
+              <span className="small">{a.step}</span>
+              <span className="xsmall muted grow">{a.detail}</span>
+            </div>
+          ))}
+          {report.issues.length > 0 && (
+            <>
+              <div className="section-title">Что требует внимания</div>
+              {report.issues.map((issue, i) => (
+                <div className="row wrap" key={`issue-${i}`} style={{ gap: 8, padding: '3px 0' }}>
+                  <Tag tone={issueTone(issue.severity)}>{issue.severity}</Tag>
+                  <span className="small grow">{issue.message}</span>
+                </div>
+              ))}
+            </>
+          )}
+          {report.state.onboarding && (
+            <p className="muted xsmall mt-sm">Знакомство осталось на шаге: {report.state.onboarding}</p>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
 function DiagnosticsTab() {
   const { app } = useApp();
   const [health, setHealth] = useState<Health | null>(null);
   useEffect(() => { if (app) void app.health().then(setHealth).catch(() => undefined); }, [app]);
   if (!health) return <Spinner />;
   return (
+    <>
+    <RecoveryCard />
     <Card title="Диагностика" action={<Btn size="xs" onClick={() => void app!.health().then(setHealth)}>Обновить</Btn>}>
       <div className="kv">
         <dt>SQLite</dt><dd>{health.database}</dd>
@@ -590,5 +665,6 @@ function DiagnosticsTab() {
         {Object.entries(health.counts).map(([table, n]) => <Tag key={table} tone="outline">{table}: {n}</Tag>)}
       </div>
     </Card>
+    </>
   );
 }

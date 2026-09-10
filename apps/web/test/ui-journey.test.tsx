@@ -172,9 +172,13 @@ describe('first run in the browser client (dom, real engine)', () => {
     window.location.hash = '#/';
     render(<App />);
 
-    // A returning user lands on the dashboard — onboarding is not shown again.
-    expect(await screen.findByText(/👋/, {}, { timeout: 40_000 })).toBeTruthy();
+    // A returning user is put back on the screen they left (req. 13) — here the profile — and
+    // onboarding is never shown again.
+    expect(await screen.findByText('Что ИИ помнит', {}, { timeout: 40_000 })).toBeTruthy();
     expect(screen.queryByText('Сначала мне нужно понять, кто вы')).toBeNull();
+
+    window.location.hash = '#/dashboard';
+    expect(await screen.findByText(/👋/, {}, { timeout: 30_000 })).toBeTruthy();
 
     window.location.hash = '#/today';
     expect(await screen.findByText('Все задачи на день', {}, { timeout: 30_000 })).toBeTruthy();
@@ -318,6 +322,46 @@ describe('first run in the browser client (dom, real engine)', () => {
     await restartApp();
     render(<App />);
     expect((await screen.findAllByText(/Выбрал другое направление/, {}, { timeout: 40_000 })).length).toBeGreaterThan(0);
+  }, 180_000);
+
+  it('returns to the last screen and keeps an unsent message (req. 13)', async () => {
+    window.location.hash = '#/mentor';
+    render(<App />);
+
+    // Half-typed message the user never got to send.
+    const input = await screen.findByPlaceholderText(/завтра в 15:00 экзамен/, {}, { timeout: 30_000 }) as HTMLTextAreaElement;
+    await user.type(input, 'Черновик: уточнить расписание на неделю');
+    await waitFor(async () => {
+      const draft = await openApp()!.services.recovery.readDraft<{ text?: string }>('mentor');
+      expect(draft?.text).toBe('Черновик: уточнить расписание на неделю');
+    }, { timeout: 20_000 });
+
+    // The process dies (tab closed, phone killed): the next launch starts at `/`.
+    cleanup();
+    await restartApp();
+    window.location.hash = '#/';
+    render(<App />);
+
+    // …and the user gets their screen and their text back, marked as a draft.
+    await waitFor(() => expect(window.location.hash).toBe('#/mentor'), { timeout: 40_000 });
+    const restored = await screen.findByPlaceholderText(/завтра в 15:00 экзамен/, {}, { timeout: 30_000 }) as HTMLTextAreaElement;
+    expect(restored.value).toBe('Черновик: уточнить расписание на неделю');
+    expect(await screen.findByText('черновик восстановлен', {}, { timeout: 20_000 })).toBeTruthy();
+
+    // The plan check the recovery report describes is visible in Settings → Диагностика.
+    window.location.hash = '#/settings';
+    await user.click(await screen.findByText('Диагностика', {}, { timeout: 30_000 }));
+    expect(await screen.findByText('Восстановление после сбоя', {}, { timeout: 20_000 })).toBeTruthy();
+    expect(await screen.findByText('Шаги проверки', {}, { timeout: 20_000 })).toBeTruthy();
+    await waitFor(() => expect(openApp()!.recoveryReport?.ok).toBe(true), { timeout: 20_000 });
+
+    // Clean up: sending clears the draft (the assertion above proved the restore).
+    window.location.hash = '#/mentor';
+    await waitFor(() => expect(screen.getByPlaceholderText(/завтра в 15:00 экзамен/)).toBeTruthy(), { timeout: 30_000 });
+    await user.click(await button('Очистить'));
+    await waitFor(async () => {
+      expect(await openApp()!.services.recovery.readDraft('mentor')).toBeNull();
+    }, { timeout: 20_000 });
   }, 180_000);
 
   it('never let a single uncaught error reach the window (req. 68, 95)', () => {

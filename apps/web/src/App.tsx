@@ -62,6 +62,13 @@ function Shell({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
 
+  // Remember where the user was (req. 13). One `app_state` row, written on navigation only, never
+  // synced and never audited — it is device-local state, not data.
+  useEffect(() => {
+    if (!app || !TITLES[location.pathname]) return;
+    void app.services.recovery.setLastRoute(location.pathname).catch(() => undefined);
+  }, [app, location.pathname]);
+
   // Onboarding gate: until the user model is confirmed the app shows only the wizard.
   if (app && done === false && !location.pathname.startsWith('/onboarding') && !location.pathname.startsWith('/auth')) {
     return <Navigate to="/onboarding" replace />;
@@ -167,13 +174,40 @@ function Gate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+/**
+ * The `/` route (req. 13): an unfinished onboarding always wins, otherwise the app returns to the
+ * screen the user was last on instead of dumping them on the dashboard every launch.
+ */
+function StartRoute({ done }: { done: boolean | null }) {
+  const { app } = useApp();
+  const [target, setTarget] = useState<string | null>(null);
+  useEffect(() => {
+    if (done === null) return; // still reading the flags row
+    if (done === false || !app) { setTarget('/onboarding'); return; }
+    let stop = false;
+    app.services.recovery.lastRoute()
+      .then((route) => { if (!stop) setTarget(route && TITLES[route] ? route : '/dashboard'); })
+      .catch(() => { if (!stop) setTarget('/dashboard'); });
+    return () => { stop = true; };
+  }, [app, done]);
+  if (!target) {
+    return (
+      <div className="loading-screen">
+        <div className="brand-mark" style={{ width: 46, height: 46, fontSize: 18 }}>LM</div>
+        <div className="row" style={{ gap: 10 }}><span className="spin" /><span className="muted small">Открываю вашу базу…</span></div>
+      </div>
+    );
+  }
+  return <Navigate to={target} replace />;
+}
+
 function Router() {
   const { app } = useApp();
   const done = useOnboardingDone(app, 0);
   return (
     <Gate>
       <Routes>
-        <Route path="/" element={<Navigate to={done === false ? '/onboarding' : '/dashboard'} replace />} />
+        <Route path="/" element={<StartRoute done={done} />} />
         <Route path="/auth" element={<AuthScreen />} />
         <Route path="/onboarding" element={<Onboarding />} />
         <Route path="/dashboard" element={<Shell><Dashboard /></Shell>} />

@@ -23,6 +23,8 @@ import { LifeMentorApp, type BackupStorage, type BackupFile, type LifeMentorOpti
 
 /** Closed port — guaranteed unreachable, exactly like a laptop with no Wi-Fi. */
 export const SERVER_URL = 'http://127.0.0.1:9';
+/** Mirrors the real module: the Settings screen imports this key when the user edits the server URL. */
+export const SERVER_URL_STORAGE_KEY = 'lifementor.serverUrl';
 
 const directory = mkdtempSync(join(tmpdir(), 'lifementor-ui-'));
 const databasePath = join(directory, 'lifementor-ui.sqlite');

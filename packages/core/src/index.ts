@@ -22,6 +22,9 @@ export {
   type AuthOptions,
   type BackupOptions,
   type LifeMentorOptions,
+  type RecoveryAction,
+  type RecoveryIssue,
+  type RecoveryReport,
   type SyncOptions,
 } from './app';
 

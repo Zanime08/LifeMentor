@@ -26,6 +26,10 @@ import { StrategyService } from './strategy/strategy';
 import { HttpSyncTransport, SyncEngine, type SyncEvent, type SyncTransport } from './services/sync';
 import { BackupService, type BackupStorage } from './services/backup';
 import { RecoveryService, type RecoveryReport } from './services/recovery';
+
+// The startup recovery report is part of the public app surface: clients show it to the user
+// (req. 13) instead of silently discarding what was repaired.
+export type { RecoveryAction, RecoveryIssue, RecoveryReport } from './services/recovery';
 import type { NarrativeGenerator } from './services/progress';
 import { AuthService, HttpAuthTransport, type AuthTransport } from './services/auth';
 import { NodeBackupStorage, WebBackupStorage } from './platform/storage';

@@ -47,8 +47,11 @@ export function Mentor() {
   const [busy, setBusy] = useState(false);
   const [proactive, setProactive] = useState<string | null>(null);
   const [convId, setConvId] = useState<string | null>(null);
+  const [draftRestored, setDraftRestored] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const booted = useRef(false);
+  const draftBooted = useRef(false);
+  const draftSaved = useRef(false);
 
   // Load conversation history + a proactive message (once per mount).
   useEffect(() => {
@@ -71,6 +74,32 @@ export function Mentor() {
     })();
   }, [app]);
 
+  // An unsent message must not die with the process (req. 13): it is written to `app_state` while
+  // the user types and comes back on the next launch, marked as a restored draft.
+  useEffect(() => {
+    if (!app || draftBooted.current) return;
+    draftBooted.current = true;
+    void app.services.recovery.readDraft<{ text?: string }>('mentor').then((draft) => {
+      const text = draft?.text;
+      if (typeof text === 'string' && text.trim()) {
+        draftSaved.current = true;
+        setInput(text);
+        setDraftRestored(true);
+      }
+    }).catch(() => undefined);
+  }, [app]);
+
+  useEffect(() => {
+    if (!app) return;
+    const text = input.trim();
+    if (!text) return;
+    const timer = window.setTimeout(() => {
+      draftSaved.current = true;
+      void app.services.recovery.saveDraft('mentor', { text }).catch(() => undefined);
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [app, input]);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -84,6 +113,11 @@ export function Mentor() {
     const content = (text ?? input).trim();
     if (!app || !content || busy) return;
     setInput('');
+    setDraftRestored(false);
+    if (draftSaved.current) {
+      draftSaved.current = false;
+      void app.services.recovery.clearDraft('mentor').catch(() => undefined);
+    }
     const userMsg: ChatMsg = { id: `u${Date.now()}`, role: 'user', text: content };
     setMessages((m) => [...m, userMsg]);
     setBusy(true);
@@ -161,6 +195,19 @@ export function Mentor() {
         ))}
         {busy && <div className="msg assistant"><span className="spin" style={{ marginRight: 8 }} /> думаю и проверяю ваши данные…</div>}
       </div>
+      {draftRestored && (
+        <div className="row wrap" style={{ padding: '8px 0 0', gap: 8 }}>
+          <Tag tone="gold">черновик восстановлен</Tag>
+          <span className="xsmall muted grow">Набранное сообщение пережило перезапуск.</span>
+          <Btn size="xs" onClick={() => {
+            draftSaved.current = false;
+            setDraftRestored(false);
+            setInput('');
+            void app?.services.recovery.clearDraft('mentor').catch(() => undefined);
+            toast('Черновик удалён');
+          }}>Очистить</Btn>
+        </div>
+      )}
       <div className="chat-input-row">
         <TextArea
           value={input}
