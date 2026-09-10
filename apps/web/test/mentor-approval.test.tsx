@@ -98,6 +98,49 @@ describe('the mentor asks before a destructive action', () => {
     expect(history.some((m) => m.content === 'Готово: отменил задачу.')).toBe(true);
   }, 180_000);
 
+  it('keeps the open question across a restart of the screen, and only until it is answered', async () => {
+    const app = await openMentor();
+    const task = await app.services.tasks.create({ title: 'Съездить за документами', estimated_minutes: 15 });
+    const proposed = await app.ai.tools.invoke('cancel_task', { task: 'Съездить за документами' }, {
+      write: { actor: 'ai' }, day: '2026-09-10', now: new Date(), approved: [], language: 'ru',
+    });
+    const turn = await app.ai.mentor.chat('Отмени задачу «Съездить за документами»');
+    const answeredTurn: TurnResult = {
+      ...turn,
+      reply: 'Отменить задачу «Съездить за документами»? Она уйдёт из плана.',
+      toolCalls: [{ call: { id: 'call-9', name: 'cancel_task', arguments: { task: 'Съездить за документами' } }, outcome: proposed, durationMs: 1 }],
+      confirmations: [proposed.confirmation!],
+    };
+    // The model's answer is the only stand-in; it is stored through the real conversation service,
+    // which is what makes the question survive.
+    await app.ai.conversations.addAssistant(turn.conversationId, answeredTurn.reply, {
+      provider: 'test', model: 'test', toolCalls: [{ name: 'cancel_task', ok: false, confirmation: proposed.confirmation }],
+    });
+
+    // ── the user closes the app with the question open ──────────────────────────
+    cleanup();
+    window.location.hash = '#/mentor';
+    render(<App />);
+    const card = await screen.findByRole('group', { name: 'Нужно ваше решение' }, { timeout: 20_000 });
+    expect(card.textContent).toContain('Отменить задачу «Съездить за документами»?');
+    // A failed call must not come back looking like a success.
+    expect(card.ownerDocument.body.textContent).toContain('⚠ отменил задачу');
+
+    await user.click(screen.getByRole('button', { name: 'Отменить' }));
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Нужно ваше решение' })).toBeNull());
+
+    // ── and now it is answered: a reload must not ask again ─────────────────────
+    cleanup();
+    window.location.hash = '#/mentor';
+    render(<App />);
+    await screen.findByPlaceholderText(/завтра в 15:00 экзамен/, {}, { timeout: 30_000 });
+    await waitFor(() => {
+      expect(screen.queryByRole('group', { name: 'Нужно ваше решение' })).toBeNull();
+      expect(document.body.textContent).toContain('Отменено — ничего не менял.');
+    });
+    expect((await app.services.tasks.get(task.id))?.status).not.toBe('cancelled');
+  }, 180_000);
+
   it('does nothing at all when the user says «Отменить»', async () => {
     const app = await openMentor();
 

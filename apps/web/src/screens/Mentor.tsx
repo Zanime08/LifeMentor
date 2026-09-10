@@ -113,7 +113,10 @@ export function Mentor() {
         const conv = await app.ai.conversations.resume('mentor');
         setConvId(conv.id);
         const history = await app.ai.conversations.history(conv.id, 30);
-        setMessages(historyToChat(history));
+        const restored = historyToChat(history);
+        setMessages(restored.messages);
+        // The question the last turn ended on is still open: put it back in front of the user.
+        if (restored.pending.length) setPending(restored.pending);
       } catch { /* fresh start */ }
       try {
         const triggers = await app.ai.mentor.evaluateTriggers();
@@ -325,16 +328,29 @@ export function Mentor() {
   );
 }
 
-function historyToChat(history: Message[]): ChatMsg[] {
+/**
+ * Turn stored messages into what the chat renders.
+ *
+ * Two things were being lost on the way back from the database. A tool chip was always drawn as a
+ * success (`ok: true`), so a failed call — a refused notification, a rejected time slot — looked
+ * like it had worked once the screen was reopened. And a question waiting for the user's decision
+ * (`turn.confirmations`) lived only in React state, so closing the app silently cancelled it.
+ * The question is restored only when it is the last thing in the conversation: answering it always
+ * appends the tool row and the answer afterwards.
+ */
+function historyToChat(history: Message[]): { messages: ChatMsg[]; pending: ConfirmationRequest[] } {
   const out: ChatMsg[] = [];
+  let pending: ConfirmationRequest[] = [];
   for (const m of history) {
     if (m.role === 'user' && m.content) out.push({ id: m.id, role: 'user', text: m.content });
     if (m.role === 'assistant' && m.content) {
       let tools: ChatMsg['tools'];
+      let unanswered: ConfirmationRequest[] = [];
       if (m.tool_calls) {
         try {
-          const calls = JSON.parse(m.tool_calls) as { name: string }[];
-          tools = calls.map((c) => ({ name: c.name, ok: true }));
+          const calls = JSON.parse(m.tool_calls) as { name: string; ok?: boolean; confirmation?: ConfirmationRequest }[];
+          tools = calls.map((c) => ({ name: c.name, ok: c.ok !== false }));
+          unanswered = calls.map((c) => c.confirmation).filter((c): c is ConfirmationRequest => Boolean(c));
         } catch (error) {
           // The message itself is fine; only its tool chips are unreadable. Say so in the console
           // rather than rendering a message that looks like it ran no tools at all.
@@ -343,7 +359,11 @@ function historyToChat(history: Message[]): ChatMsg[] {
         }
       }
       out.push({ id: m.id, role: 'assistant', text: m.content, tools });
+      // A later message means the user did answer (or asked something else) — the card is not shown.
+      pending = unanswered;
+    } else if (m.role === 'user' || m.role === 'tool') {
+      pending = [];
     }
   }
-  return out;
+  return { messages: out, pending };
 }

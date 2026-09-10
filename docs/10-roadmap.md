@@ -28,11 +28,11 @@ that exposes it is tracked separately, because a service without a screen is not
 | 15 | Notifications | ✅ **web push + FCM done** — client budget/quiet-hours/smart reminders + local scheduling; server: VAPID Web Push (subscribe/poll/deliver queue, urgent-news push with daily cap), **FCM v1 transport** (RS256 service-account JWT, token revocation, urgent = visible OS notification, data-only otherwise), service worker, polling fallback as the guaranteed path. Activation is external: a Firebase project for `ai.lifementor.app` + a server service account (docs/11 §FCM). |
 | 16 | Sync + offline (queue, incremental push/pull, conflicts) | ✅ done end to end — client engine, server API, two-device integration test |
 | 17 | Backup + restore + export/import + account deletion | ✅ done (local images, JSON archives, rotation, purge, **cloud backup slot**: client-side AES-GCM, server stores ciphertext + sha256, `POST/GET/DELETE /v1/backup`) |
-| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 231 automated tests passing (38 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **bundle boot test (builds `dist/main.mjs` and calls the running server)** + **packaged-archive test (self-contained start on an unconfigured machine)** + **client-bundle credential guard (scans the built client for keys/secrets, with a self-test)** + **dialog contract (keyboard focus, announcement, Escape)** + **`init:env` test** + **maintenance phase gate (snapshots/reviews/backup/retention on a real clock, 10 tests)** + **real clients against the shipped server bundle (register → two-device sync → AI gateway on a keyless machine)** + **notification gate (quiet hours across a restart, per-type silence, daily budget, first-launch reconciliation)** + **screen-load guard (no silent `.catch`, a failure is shown with a retry)** + **route-level code splitting (every screen its own chunk, guarded at the source and in the built bundle)** + **screen error boundary (a screen that cannot load does not take the app down)** + **UI journey tests driving the real client under jsdom**) |
+| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 232 automated tests passing (38 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **bundle boot test (builds `dist/main.mjs` and calls the running server)** + **packaged-archive test (self-contained start on an unconfigured machine)** + **client-bundle credential guard (scans the built client for keys/secrets, with a self-test)** + **dialog contract (keyboard focus, announcement, Escape)** + **`init:env` test** + **maintenance phase gate (snapshots/reviews/backup/retention on a real clock, 10 tests)** + **real clients against the shipped server bundle (register → two-device sync → AI gateway on a keyless machine)** + **notification gate (quiet hours across a restart, per-type silence, daily budget, first-launch reconciliation)** + **screen-load guard (no silent `.catch`, a failure is shown with a retry)** + **route-level code splitting (every screen its own chunk, guarded at the source and in the built bundle)** + **screen error boundary (a screen that cannot load does not take the app down)** + **UI journey tests driving the real client under jsdom**) |
 | 19 | Packaging (Windows NSIS/MSI, Android APK, server release bundle) | 🟡 **one command away** — `npm run package:server` produces a self-contained server archive (single 2 MB `.mjs`, launcher, autostart script, README) that starts on a machine with no dependencies and writes its own stable `.env`; the Windows NSIS installer and the signed APK are built by `release.yml` (Rust/JDK) and attached to the GitHub Release by the `publish` job, with a server bundle artifact next to them — `docs/11-packaging.md` |
 | 20 | Polishing (UI density, empty states, error copy, perf, a11y, hardening) | 🟡 in progress — error copy, toast a11y, icon-button audit, empty states, performance audit, **UI test layer**, **route-level code splitting with a checked startup budget** and the hardening round below are done; deep profiling on a real device is left |
 
-**Test suite today:** 231 tests, 38 files — `packages/core/test` (public API, persistence + WASM
+**Test suite today:** 232 tests, 38 files — `packages/core/test` (public API, persistence + WASM
 driver durability, **Tauri and Capacitor driver contracts — the exact `sql_*` invoke shapes and
 v8 plugin API the shells implement, run against emulated Rust/Android engines**, sync/backup/
 recovery, auth, AI, onboarding), `apps/server/test` (auth API, sync API, AI gateway, news engine
@@ -285,6 +285,14 @@ wrote).
        refused with a sentence that says so and no buttons at all. `import-preview.test.tsx` drives
        the real file input over the real engine, including an archive exported by a *second* client
        and merged into this account.
+     * **the chat's history told two lies**: a tool chip was always drawn as a success when the
+       conversation was read back (`ok: true` for every stored call, ignoring the flag that was
+       stored), so a refused reminder or a rejected time slot looked like it had worked as soon as
+       the screen was reopened; and an open question («Удалить событие «Встреча»?») lived only in
+       React state, so closing the app quietly cancelled a decision the user had not made. The
+       question is now stored with the message that asked it and restored when it is the last thing in
+       the conversation (answering appends the tool row and the answer, so an answered question never
+       comes back), and the chips carry their real outcome.
      * **the one thing the assistant could not do was anything that mattered**: ten tools carry a
        `confirm` policy — delete an event, cancel a task, archive a goal, raise a task to P0, record a
        skill assessment, save a confirmed fact, build a plan for another day — and the registry
@@ -349,7 +357,7 @@ npm start                   # run the bundle
 # Secrets (JWT_SECRET, provider keys, VAPID) go in a .env file in the repo
 # root (copy .env.example) — read by the server, gitignored, never sent to clients.
 
-npm test                    # 231 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
+npm test                    # 232 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
 npm run typecheck           # tsc --noEmit over the whole monorepo
 npm run check:client-secrets  # no provider keys / JWT secrets in the built client
 npm run check:client-budget   # screens stay lazy: startup download within its gzip budget

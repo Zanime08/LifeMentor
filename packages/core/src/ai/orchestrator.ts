@@ -227,7 +227,15 @@ export class AIOrchestrator {
       model: last?.model ?? 'unknown',
       tokens: completionTokens || estimateTokens(reply),
       latencyMs: Date.now() - started,
-      toolCalls: executions.length ? executions.map((e) => ({ name: e.call.name, ok: e.outcome.ok })) : undefined,
+      // A refused tool call leaves the question on the message: the interface restores it after a
+      // restart instead of dropping a decision the user never made (req. 13).
+      toolCalls: executions.length
+        ? executions.map((e) => ({
+          name: e.call.name,
+          ok: e.outcome.ok,
+          ...(e.outcome.confirmation ? { confirmation: e.outcome.confirmation } : {}),
+        }))
+        : undefined,
     }, write);
 
     const memoriesSaved = options.extractMemories === false || !settings.ai.memory_enabled
