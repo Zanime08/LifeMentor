@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { CalendarEvent, DayPlan, PlannedSlot, Task } from '@lifementor/core';
+import { deferredReason, planWarnings, slotNote, slotTitle } from '../lib/plan';
 import { Btn, Card, Empty, Field, I, Modal, PageHead, Seg, Select, Spinner, Tag, TextArea, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
 import { ENERGY_RU, KIND_RU, PRIORITY_RU, REASON_RU, SKIP_REASONS, fmtMinutes, hm, todayKey } from '../lib/ru';
@@ -100,6 +101,8 @@ export function Today() {
 
   const taskStatus = (taskId?: string): Task | undefined => tasks.find((t) => t.id === taskId);
 
+
+
   const timeline = useMemo(() => {
     if (!plan) return [];
     return [...plan.slots].sort((a, b) => a.start.localeCompare(b.start));
@@ -126,9 +129,9 @@ export function Today() {
       />
 
       <div className="grid" style={{ gridTemplateColumns: '1fr' }}>
-        {plan && plan.warnings.length > 0 && (
+        {plan && (plan.warning_items?.length ?? 0) + (plan.warnings?.length ?? 0) > 0 && (
           <div className="proactive" style={{ background: 'var(--warn-soft)', borderColor: '#e8d5ae' }}>
-            {plan.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+            {planWarnings(plan).map((w, i) => <div key={i}>⚠ {w}</div>)}
           </div>
         )}
 
@@ -163,7 +166,7 @@ export function Today() {
                     <div key={d.task_id} className="row small" style={{ gap: 8, padding: '4px 0' }}>
                       <Tag tone="p1">не влезло</Tag>
                       <span className="grow">{d.title}</span>
-                      <span className="muted xsmall">{d.reason}</span>
+                      <span className="muted xsmall">{deferredReason(d.reason_items, d.reason)}</span>
                     </div>
                   ))}
                 </div>
@@ -228,6 +231,8 @@ export function Today() {
 function SlotView({ slot, task, onDone, onPostpone }: { slot: PlannedSlot; task?: Task; onDone: (t: Task) => void; onPostpone: (t: Task) => void }) {
   const done = task?.status === 'done';
   const status = task?.status;
+  const title = slotTitle(slot);
+  const note = slotNote(slot);
   return (
     <div className={`tl-item ${slot.kind} ${done ? 'done' : ''}`}>
       <div className="tl-time">{slot.start}{slot.end !== slot.start ? `–${slot.end}` : ''}</div>
@@ -235,7 +240,7 @@ function SlotView({ slot, task, onDone, onPostpone }: { slot: PlannedSlot; task?
         {slot.kind === 'task' && task && (
           <input type="checkbox" checked={!!done} onChange={() => onDone(task)} style={{ accentColor: 'var(--accent)', width: 15, height: 15, flexShrink: 0 }} />
         )}
-        <span style={{ flex: 1 }}>{slot.title}</span>
+        <span style={{ flex: 1 }}>{title}</span>
         <div className="tl-actions">
           {slot.priority && <Tag tone={`p${slot.priority.slice(1)}`}>{slot.priority}</Tag>}
           {slot.energy && <span className="xsmall muted">{ENERGY_RU[slot.energy]}</span>}
@@ -248,7 +253,7 @@ function SlotView({ slot, task, onDone, onPostpone }: { slot: PlannedSlot; task?
           )}
         </div>
       </div>
-      {slot.note && <div className="tl-meta">{slot.note}</div>}
+      {note && <div className="tl-meta">{note}</div>}
       {task && task.postponed_count > 0 && <div className="tl-meta">переносов: {task.postponed_count}</div>}
     </div>
   );

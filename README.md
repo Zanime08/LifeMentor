@@ -52,7 +52,7 @@ docs/            Проектирование: продуктовая специ
 
 ```bash
 npm install            # зависимости (workspace: core, server, web, mobile, desktop)
-npm test               # 207 автотестов (core + server + web bootstrap + UI-сквозные сценарии
+npm test               # 231 автотеста (core + server + web bootstrap + UI-сквозные сценарии
                        # + контракты драйверов Tauri/Capacitor)
 npm run build          # сборка core + сервер (один файл) + клиент (экраны — отдельными чанками)
 npm run check:client-budget   # стартовая загрузка клиента остаётся в бюджете (экраны ленивые)

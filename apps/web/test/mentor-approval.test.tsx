@@ -1,0 +1,132 @@
+// @vitest-environment jsdom
+/**
+ * Approving a dangerous action in the chat (phase-20 hardening, req. 22–24).
+ *
+ * The engine refuses to delete an event, cancel a task, archive a goal or raise a task to P0 without
+ * the user's approval of that exact call. It hands the model a question; nothing in the interface
+ * ever showed it or answered it, so those tools could never run — the user said «да, удали» and got
+ * the same refusal back, forever. This drives the real screen, the real registry and the real SQLite:
+ * the only stand-in is the model's answer (`mentor.chat`), which is what a test may mock.
+ */
+import React from 'react';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import type { TurnResult } from '@lifementor/core';
+
+vi.mock('../src/core/app', async () => await import('./support/app-harness'));
+
+import App from '../src/App';
+import { bootstrapApp, disposeHarness, openApp } from './support/app-harness';
+
+const user = userEvent.setup();
+
+afterEach(() => {
+  cleanup();
+  window.location.hash = '#/';
+});
+
+afterAll(async () => {
+  await disposeHarness();
+});
+
+/**
+ * Render the mentor screen on an app that has already been through onboarding (this file is about
+ * the approval card, not about the first-run interview — `ui-journey.test.tsx` drives that through
+ * the DOM). The gate, the router and the screens are the real ones.
+ */
+async function openMentor(): Promise<NonNullable<ReturnType<typeof openApp>>> {
+  const app = await bootstrapApp();
+  const flags = await app.services.settings.get('flags');
+  if (!flags.onboarding_completed) {
+    await app.services.onboarding.start();
+    await app.services.onboarding.complete();
+  }
+  window.location.hash = '#/mentor';
+  render(<App />);
+  await waitFor(() => {
+    expect(openApp()).not.toBeNull();
+  }, { timeout: 30_000 });
+  return openApp()!;
+}
+
+describe('the mentor asks before a destructive action', () => {
+  it('shows the question in Russian and does the action only after «Разрешить»', async () => {
+    const app = await openMentor();
+
+    const task = await app.services.tasks.create({ title: 'Отменить поездку в Москву', estimated_minutes: 15 });
+    // What the model proposes: the real registry produces the confirmation request (nothing is
+    // faked about the engine's policy — only the model's reply is). The model names the task the way
+    // the user said it, not by id, so the question can name it too.
+    const proposed = await app.ai.tools.invoke('cancel_task', { task: 'Отменить поездку в Москву' }, {
+      write: { actor: 'ai' }, day: '2026-09-10', now: new Date(), approved: [], language: 'ru',
+    });
+    expect(proposed.ok).toBe(false);
+    expect(proposed.confirmation).toBeTruthy();
+
+    const conversation = await app.ai.mentor.chat('Отмени задачу «Отменить поездку в Москву»');
+    const fakeTurn: TurnResult = {
+      ...conversation,
+      reply: 'Отменить задачу «Отменить поездку в Москву»? Она уйдёт из плана.',
+      toolCalls: [{ call: { id: 'call-1', name: 'cancel_task', arguments: { task: 'Отменить поездку в Москву' } }, outcome: proposed, durationMs: 1 }],
+      confirmations: [proposed.confirmation!],
+    };
+    const box = await screen.findByPlaceholderText(/завтра в 15:00 экзамен/, {}, { timeout: 30_000 });
+    // Type first, then stub: a message typed before the model is replaced can never reach the network.
+    await user.type(box, 'Отмени задачу «Отменить поездку в Москву»');
+    const chat = vi.spyOn(app.ai.mentor, 'chat').mockResolvedValue(fakeTurn);
+    await user.click(screen.getByRole('button', { name: 'Отправить' }));
+    expect(chat).toHaveBeenCalled();
+
+    // ── the question ────────────────────────────────────────────────────────────
+    const card = await screen.findByRole('group', { name: 'Нужно ваше решение' }, { timeout: 20_000 });
+    expect(card.textContent).toContain('Отменить задачу «Отменить поездку в Москву»?');
+    expect(card.textContent).not.toContain('Cancel the task'); // the engine's English question stays out
+    expect(await screen.findByRole('button', { name: 'Разрешить' })).toBeTruthy();
+    // …and the task is untouched while the question is open.
+    expect((await app.services.tasks.get(task.id))?.status).not.toBe('cancelled');
+
+    // ── the answer ──────────────────────────────────────────────────────────────
+    await user.click(screen.getByRole('button', { name: 'Разрешить' }));
+    await waitFor(async () => {
+      expect((await app.services.tasks.get(task.id))?.status).toBe('cancelled');
+    }, { timeout: 20_000 });
+    // The card is gone, the outcome is in the chat, and the decision is in the conversation.
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Нужно ваше решение' })).toBeNull());
+    expect((await screen.findAllByText(/Готово: отменил задачу/)).length).toBeGreaterThan(0);
+    const history = await app.ai.conversations.history(fakeTurn.conversationId, 20);
+    expect(history.some((m) => m.content === 'Готово: отменил задачу.')).toBe(true);
+  }, 180_000);
+
+  it('does nothing at all when the user says «Отменить»', async () => {
+    const app = await openMentor();
+
+    const event = await app.services.calendar.create({ title: 'Встреча с куратором', day: '2026-09-10', start: '12:00', end: '13:00', kind: 'meeting' });
+    const proposed = await app.ai.tools.invoke('delete_calendar_event', { title: 'Встреча с куратором', day: '2026-09-10' }, {
+      write: { actor: 'ai' }, day: '2026-09-10', now: new Date(), approved: [], language: 'ru',
+    });
+    const conversation = await app.ai.mentor.chat('Удали встречу с куратором');
+    const refusedTurn = {
+      ...conversation,
+      reply: 'Удалить событие «Встреча с куратором» (2026-09-10)? Это необратимо.',
+      toolCalls: [{ call: { id: 'call-2', name: 'delete_calendar_event', arguments: { title: 'Встреча с куратором' } }, outcome: proposed, durationMs: 1 }],
+      confirmations: [proposed.confirmation!],
+    } as TurnResult;
+
+    const box = await screen.findByPlaceholderText(/завтра в 15:00 экзамен/, {}, { timeout: 30_000 });
+    await user.type(box, 'Удали встречу с куратором');
+    const chat = vi.spyOn(app.ai.mentor, 'chat').mockResolvedValue(refusedTurn);
+    await user.click(screen.getByRole('button', { name: 'Отправить' }));
+    expect(chat).toHaveBeenCalled();
+
+    const card = await screen.findByRole('group', { name: 'Нужно ваше решение' }, { timeout: 20_000 });
+    expect(card.textContent).toContain('Удалить событие «Встреча с куратором»');
+    expect(card.textContent).toContain('необратимо');
+
+    await user.click(await screen.findByRole('button', { name: 'Отменить' }));
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Нужно ваше решение' })).toBeNull());
+    expect(await screen.findAllByText(/Отменено — ничего не менял/)).toBeTruthy();
+    // The event is still there, exactly as promised.
+    expect((await app.services.calendar.get(event.id))?.title).toBe('Встреча с куратором');
+  }, 180_000);
+});

@@ -3,6 +3,8 @@
  * Field names match the SQLite columns exactly (no mapping layer, no drift).
  */
 
+import type { PlanNote } from '../planning/plan-text';
+
 // ─────────────────────────── shared enums & mixins ───────────────────────────
 export type SyncState = 'local' | 'pending' | 'synchronized' | 'conflict';
 export type Actor = 'user' | 'ai' | 'system' | 'sync' | 'import';
@@ -697,17 +699,27 @@ export interface PlannedSlot {
   energy?: Energy;
   note?: string;
   immovable?: boolean;
+  /**
+   * The engine's own title, when the title is *not* the user's words («Free time», «Break»,
+   * «Spaced repetition …»). `title` stays the English form for the AI context and the export; a
+   * screen or a notification words the code instead (planning/plan-text.ts).
+   */
+  generated_title?: PlanNote;
+  /** Why this block is here, as codes — `note` is the same thing in English. */
+  note_items?: PlanNote[];
 }
 
 export interface DayPlan {
   day: string;
   slots: PlannedSlot[];
-  deferred: { task_id: string; title: string; reason: string }[];
+  deferred: { task_id: string; title: string; reason: string; reason_items?: PlanNote[] }[];
   focus_minutes: number;
   free_minutes: number;
   fixed_minutes: number;
   capacity_minutes: number;
   overload: boolean;
+  /** English, for the AI context and the export — the user reads `warning_items`. */
   warnings: string[];
+  warning_items?: PlanNote[];
   generated_at: string;
 }

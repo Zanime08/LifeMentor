@@ -2,6 +2,7 @@ import type { Repos } from '../db/repos';
 import type { WriteContext } from '../db/repo';
 import { USER_WRITE } from '../db/repo';
 import type { DayPlan, Energy, PlannedSlot, Priority, Task } from '../domain/types';
+import type { PlanNote } from './plan-text';
 import { PRIORITY_WEIGHT, ENERGY_COST } from '../domain/types';
 import type { CalendarService, BusyBlock } from '../services/calendar';
 import type { TaskService } from '../services/tasks';
@@ -47,7 +48,9 @@ export interface PlannerDeps {
 export interface ScoredTask {
   task: Task;
   score: number;
+  /** English, for the AI context and the export — the user reads `reason_items`. */
   reasons: string[];
+  reason_items: PlanNote[];
   minutes: number;
   /** Hours of day this task should preferably start in (energy fit). */
   preferredHours: number[];
@@ -142,6 +145,7 @@ export class PlannerService {
         eventId: block.id,
         immovable: block.immovable,
         note: block.immovable ? 'fixed commitment — nothing is scheduled over this' : undefined,
+        note_items: block.immovable ? [{ code: 'fixed_commitment' }] : undefined,
       });
     }
 
@@ -151,18 +155,34 @@ export class PlannerService {
     let focusMinutes = 0;
     let sinceBreak = 0;
     const warnings: string[] = [];
+    const warningItems: PlanNote[] = [];
 
     for (const scoredTask of scored) {
       if (remainingCapacity <= 5) {
-        deferred.push({ task_id: scoredTask.task.id, title: scoredTask.task.title, reason: 'today is full — the plan is capped by what the day physically holds' });
+        deferred.push({
+          task_id: scoredTask.task.id, title: scoredTask.task.title,
+          reason: 'today is full — the plan is capped by what the day physically holds',
+          reason_items: [{ code: 'day_full' }],
+        });
         continue;
       }
       const minutes = Math.min(scoredTask.minutes, remainingCapacity);
-      if (minutes < 10) { deferred.push({ task_id: scoredTask.task.id, title: scoredTask.task.title, reason: 'less than 10 minutes of capacity left' }); continue; }
+      if (minutes < 10) {
+        deferred.push({
+          task_id: scoredTask.task.id, title: scoredTask.task.title,
+          reason: 'less than 10 minutes of capacity left',
+          reason_items: [{ code: 'no_room' }],
+        });
+        continue;
+      }
 
       const placement = findPlacement(freeWindows, placements, minutes, scoredTask.task.energy, planning.buffer_minutes, scoredTask.preferredHours);
       if (!placement) {
-        deferred.push({ task_id: scoredTask.task.id, title: scoredTask.task.title, reason: `no continuous ${minutes}-minute block left (day is full)` });
+        deferred.push({
+          task_id: scoredTask.task.id, title: scoredTask.task.title,
+          reason: `no continuous ${minutes}-minute block left (day is full)`,
+          reason_items: [{ code: 'no_block', params: { minutes } }],
+        });
         continue;
       }
       placements.set(scoredTask.task.id, placement);
@@ -175,6 +195,7 @@ export class PlannerService {
         priority: scoredTask.task.priority,
         energy: scoredTask.task.energy,
         note: scoredTask.reasons.join(' · '),
+        note_items: scoredTask.reason_items,
       });
       remainingCapacity -= minutes;
       focusMinutes += minutes;
@@ -184,7 +205,10 @@ export class PlannerService {
         const breakSlot = findPlacement(freeWindows, placements, 10, 'low', 0, []);
         if (breakSlot) {
           placements.set(`break_${placement.end}`, breakSlot);
-          slots.push({ start: minutesToTime(breakSlot.start), end: minutesToTime(breakSlot.end), kind: 'break', title: 'Break' });
+          slots.push({
+            start: minutesToTime(breakSlot.start), end: minutesToTime(breakSlot.end), kind: 'break', title: 'Break',
+            generated_title: { code: 'break', params: { minutes: breakSlot.end - breakSlot.start } },
+          });
         }
         sinceBreak = 0;
       }
@@ -196,10 +220,13 @@ export class PlannerService {
       const placement = findPlacement(freeWindows, placements, REVIEW_BLOCK_MINUTES, 'low', planning.buffer_minutes, []);
       if (placement) {
         placements.set('learning_reviews', placement);
+        const reviewCards = Math.min(dueReviews, learningSettings.review_limit);
         slots.push({
           start: minutesToTime(placement.start), end: minutesToTime(placement.end), kind: 'task',
-          title: `Spaced repetition (${Math.min(dueReviews, learningSettings.review_limit)} cards due)`,
+          title: `Spaced repetition (${reviewCards} cards due)`,
           note: 'active recall · short by design',
+          generated_title: { code: 'spaced_repetition', params: { due: dueReviews, limit: reviewCards } },
+          note_items: [{ code: 'active_recall' }],
         });
         remainingCapacity -= REVIEW_BLOCK_MINUTES;
       }
@@ -209,7 +236,12 @@ export class PlannerService {
     const freeSlot = findPlacement(freeWindows, placements, protectedFree, 'low', 0, [], { preferLatest: true });
     if (freeSlot) {
       placements.set('free_time', freeSlot);
-      slots.push({ start: minutesToTime(freeSlot.start), end: minutesToTime(freeSlot.end), kind: 'free', title: 'Free time', note: 'protected — not a gap to fill' });
+      slots.push({
+        start: minutesToTime(freeSlot.start), end: minutesToTime(freeSlot.end), kind: 'free',
+        title: 'Free time', note: 'protected — not a gap to fill',
+        generated_title: { code: 'free_time', params: { minutes: freeSlot.end - freeSlot.start } },
+        note_items: [{ code: 'free_time_note' }],
+      });
     }
 
     // 7. Honest reporting.
@@ -217,13 +249,19 @@ export class PlannerService {
     const overload = demanded > capacity + 30;
     if (overload) {
       warnings.push(`You asked for ${Math.round(demanded / 60 * 10) / 10}h of work but the day realistically holds ${Math.round(capacity / 60 * 10) / 10}h after ${Math.round(fixedMinutes / 60 * 10) / 10}h of fixed commitments. ${deferred.length} item(s) moved off today.`);
+      warningItems.push({ code: 'overload', params: { demanded, capacity, fixed: fixedMinutes, deferred: deferred.length } });
     }
     if (fixedMinutes > (endBound - startBound) * 0.75) {
       warnings.push('This day is mostly fixed commitments. I kept the plan minimal on purpose.');
+      warningItems.push({ code: 'fixed_heavy' });
     }
-    if (!freeSlot && protectedFree > 0) warnings.push('No room for protected free time today — consider moving something.');
+    if (!freeSlot && protectedFree > 0) {
+      warnings.push('No room for protected free time today — consider moving something.');
+      warningItems.push({ code: 'no_free_time' });
+    }
     if (observedLoad !== null && capacity < demanded * 0.6) {
       warnings.push(`Based on the last weeks you complete ~${Math.round(observedLoad / 60 * 10) / 10}h of focused work a day; the plan stays near that.`);
+      warningItems.push({ code: 'observed_load', params: { observed: observedLoad } });
     }
 
     slots.sort((a, b) => timeToMinutes(a.start) - timeToMinutes(b.start));
@@ -237,6 +275,7 @@ export class PlannerService {
       capacity_minutes: capacity,
       overload,
       warnings,
+      warning_items: warningItems,
       generated_at: nowIso(),
     };
 
@@ -425,27 +464,28 @@ export class PlannerService {
 
     for (const task of candidates) {
       const reasons: string[] = [];
+      const reasonItems: PlanNote[] = [];
       const priorityWeight = PRIORITY_WEIGHT[task.priority as Priority] ?? 0.45;
 
       // urgency: due date proximity
       let urgency = 0;
       if (task.due_date) {
         const days = daysUntil(task.due_date, ctx.now);
-        if (days < 0) { urgency = 1; reasons.push(`overdue by ${Math.abs(days)}d`); }
-        else if (days === 0) { urgency = 0.95; reasons.push('due today'); }
-        else if (days <= 2) { urgency = 0.7; reasons.push(`due in ${days}d`); }
-        else if (days <= 7) { urgency = 0.4; reasons.push(`due in ${days}d`); }
+        if (days < 0) { urgency = 1; reasons.push(`overdue by ${Math.abs(days)}d`); reasonItems.push({ code: 'overdue_by', params: { days: Math.abs(days) } }); }
+        else if (days === 0) { urgency = 0.95; reasons.push('due today'); reasonItems.push({ code: 'due_today' }); }
+        else if (days <= 2) { urgency = 0.7; reasons.push(`due in ${days}d`); reasonItems.push({ code: 'due_in', params: { days } }); }
+        else if (days <= 7) { urgency = 0.4; reasons.push(`due in ${days}d`); reasonItems.push({ code: 'due_in', params: { days } }); }
         else urgency = 0.15;
       }
 
       // importance: priority + strict flag + postponement history
       let importance = priorityWeight;
-      if (task.strict === 1) { importance = Math.min(1, importance + 0.2); reasons.push('marked important'); }
-      if (Number(task.postponed_count) >= 2) { importance = Math.min(1, importance + 0.1); reasons.push(`postponed ${task.postponed_count}×`); }
+      if (task.strict === 1) { importance = Math.min(1, importance + 0.2); reasons.push('marked important'); reasonItems.push({ code: 'marked_important' }); }
+      if (Number(task.postponed_count) >= 2) { importance = Math.min(1, importance + 0.1); reasons.push(`postponed ${task.postponed_count}×`); reasonItems.push({ code: 'postponed_n', params: { count: Number(task.postponed_count) } }); }
 
       // goal alignment
       const goalAlignment = task.goal_id ? 0.8 : task.project_id ? 0.6 : task.learning_topic_id ? 0.55 : 0.25;
-      if (task.goal_id) reasons.push('serves a goal');
+      if (task.goal_id) { reasons.push('serves a goal'); reasonItems.push({ code: 'serves_goal' }); }
 
       // skill value: learning/practice builds capability
       const skillValue = task.kind === 'learning' || task.kind === 'practice' || task.kind === 'review' ? 0.7 : task.kind === 'project' ? 0.55 : 0.3;
@@ -463,7 +503,7 @@ export class PlannerService {
       ).toFixed(4));
 
       const preferredHours = task.energy === 'high' ? (best.length ? best : [9, 10, 11]) : task.energy === 'low' ? [15, 16, 20, 21] : [];
-      scored.push({ task, score, reasons, minutes: Math.max(10, Math.round(Number(task.estimated_minutes ?? 30))), preferredHours });
+      scored.push({ task, score, reasons, reason_items: reasonItems, minutes: Math.max(10, Math.round(Number(task.estimated_minutes ?? 30))), preferredHours });
     }
 
     return scored.sort((a, b) => b.score - a.score || (a.task.priority as string).localeCompare(b.task.priority as string));

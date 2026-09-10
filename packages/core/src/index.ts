@@ -70,6 +70,7 @@ export * from './services/auth';
 // ── strategy, planning, onboarding ──────────────────────────────────────
 export * from './strategy/strategy';
 export * from './planning/planner';
+export * from './planning/plan-text';
 export * from './onboarding/service';
 export * from './onboarding/interview';
 export * from './onboarding/questions';

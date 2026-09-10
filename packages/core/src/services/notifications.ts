@@ -9,6 +9,7 @@ import type { PlatformAdapter, ScheduledNotification } from '../platform/adapter
 import { newId } from '../util/id';
 import { addMinutes, dateFromDayKey, dayKey, minutesToTime, nowIso, timeToMinutes } from '../util/time';
 import { createLogger } from '../util/logging';
+import { isRussian, planDuration, planNoteText, planNotesText, pluralRu } from '../planning/plan-text';
 
 export const CreateNotificationSchema = z.object({
   type: z.enum(NOTIFICATION_TYPES as [NotificationType, ...NotificationType[]]),
@@ -122,13 +123,18 @@ export class NotificationService {
     const lead = options.leadMinutes ?? 10;
     const created: Notification[] = [];
     const dayStart = dateFromDayKey(plan.day);
+    const lang = await this.language();
+    const ru = isRussian(lang);
+    const blocks = plan.slots.filter((s) => s.kind === 'task').length;
 
     if (plan.slots.length) {
       const first = plan.slots[0];
       const decision = await this.create({
         type: 'daily_plan',
-        title: `Today: ${plan.slots.filter((s) => s.kind === 'task').length} focus block(s), ${Math.round(plan.focus_minutes / 60 * 10) / 10}h`,
-        body: this.planSummary(plan),
+        title: ru
+          ? `Сегодня: ${blocks} ${pluralRu(blocks, 'блок работы', 'блока работы', 'блоков работы')}, ${planDuration(plan.focus_minutes, lang)}`
+          : `Today: ${blocks} focus block(s), ${Math.round(plan.focus_minutes / 60 * 10) / 10}h`,
+        body: this.planSummary(plan, lang),
         importance: 0.6,
         scheduled_at: new Date(dayStart.getTime() + timeToMinutes(first.start) * 60_000 - lead * 60_000).toISOString(),
         context: { day: plan.day, deferred: plan.deferred.length, warnings: plan.warnings },
@@ -141,12 +147,21 @@ export class NotificationService {
       if (slot.kind !== 'task' && slot.kind !== 'event') continue;
       const at = new Date(dayStart.getTime() + timeToMinutes(slot.start) * 60_000 - lead * 60_000);
       if (at.getTime() < Date.now()) continue;
+      // The title of a generated block («Spaced repetition (3 cards due)») is the engine's words,
+      // not the user's — word it for the reader; task and event titles are the user's own.
+      const generated = slot.generated_title ? planNoteText(slot.generated_title, lang) : null;
+      const title = `${slot.start} — ${generated ?? slot.title}`;
+      const why = planNotesText(slot.note_items, lang) ?? slot.note;
       const decision = await this.create({
         type: slot.kind === 'event' ? 'schedule_start' : 'task_reminder',
-        title: `${slot.start} — ${slot.title}`,
+        title,
         body: slot.kind === 'event'
-          ? `Starts at ${slot.start}${slot.immovable ? ' (fixed commitment)' : ''}.`
-          : `Starts at ${slot.start}, ~${minutesBetweenTime(slot.start, slot.end)} minutes.${slot.note ? ` Why this now: ${slot.note}.` : ''}`,
+          ? (ru
+            ? `Начинается в ${slot.start}${slot.immovable ? ' (жёсткое обязательство)' : ''}.`
+            : `Starts at ${slot.start}${slot.immovable ? ' (fixed commitment)' : ''}.`)
+          : (ru
+            ? `Начинается в ${slot.start}, ~${minutesBetweenTime(slot.start, slot.end)} мин.${why ? ` Почему сейчас: ${why}.` : ''}`
+            : `Starts at ${slot.start}, ~${minutesBetweenTime(slot.start, slot.end)} minutes.${why ? ` Why this now: ${why}.` : ''}`),
         importance: slot.priority === 'P0' ? 0.8 : slot.immovable ? 0.75 : 0.5,
         scheduled_at: at.toISOString(),
         entity_type: slot.kind === 'event' ? 'calendar_event' : 'task',
@@ -159,14 +174,30 @@ export class NotificationService {
     return created;
   }
 
-  private planSummary(plan: DayPlan): string {
+  /** The body of the morning reminder: the same facts, in the language the user reads. */
+  private planSummary(plan: DayPlan, language = 'en'): string {
+    const ru = isRussian(language);
     const tasks = plan.slots.filter((s) => s.kind === 'task');
     const first = tasks[0];
+    const title = (slot: (typeof tasks)[number]): string =>
+      (slot.generated_title ? planNoteText(slot.generated_title, language) : null) ?? slot.title;
     const parts: string[] = [];
-    if (first) parts.push(`First: ${first.start} ${first.title}.`);
-    parts.push(`${Math.round(plan.focus_minutes / 60 * 10) / 10}h focus, ${Math.round(plan.free_minutes / 60 * 10) / 10}h protected free time.`);
-    if (plan.deferred.length) parts.push(`${plan.deferred.length} item(s) did not fit today.`);
-    if (plan.warnings[0]) parts.push(plan.warnings[0]);
+    if (first) parts.push(ru ? `Первое: ${first.start} ${title(first)}.` : `First: ${first.start} ${title(first)}.`);
+    parts.push(ru
+      ? `${planDuration(plan.focus_minutes, language)} фокуса, ${planDuration(plan.free_minutes, language)} защищённого свободного времени.`
+      : `${Math.round(plan.focus_minutes / 60 * 10) / 10}h focus, ${Math.round(plan.free_minutes / 60 * 10) / 10}h protected free time.`);
+    if (plan.deferred.length) {
+      // Agreement matters: «1 пункт не вошёл», «2 пункта не вошли», «5 пунктов не вошли».
+      parts.push(ru
+        ? `${plan.deferred.length} ${pluralRu(plan.deferred.length, 'пункт', 'пункта', 'пунктов')} `
+          + `${plan.deferred.length === 1 ? 'не вошёл' : 'не вошли'} в день.`
+        : `${plan.deferred.length} item(s) did not fit today.`);
+    }
+    // A plan built by an older build has English warnings only; showing one is better than hiding
+    // that the day is overloaded, and the next plan build replaces it with the structured form.
+    const warning = plan.warning_items?.length ? plan.warning_items.map((w) => planNoteText(w, language)).find(Boolean) : null;
+    if (warning) parts.push(warning!);
+    else if (plan.warnings[0]) parts.push(plan.warnings[0]);
     return parts.join(' ');
   }
 
@@ -305,6 +336,20 @@ export class NotificationService {
   /** Silencing one kind of notification without touching the others. */
   async setTypeEnabled(type: NotificationType, enabled: boolean, ctx: WriteContext = USER_WRITE): Promise<void> {
     await this.setPreference(type, { enabled }, ctx);
+  }
+
+  /**
+   * The language the user reads in — the same rule as onboarding and the mentor. Notification text is
+   * the one kind the engine must compose itself: the OS scheduler and the push sender deliver it with
+   * no interface running, so there is no screen to word a code.
+   */
+  private async language(): Promise<string> {
+    try {
+      const all = await this.settings.all();
+      return all.ai.language || all.profile.locale || 'en';
+    } catch {
+      return 'en';
+    }
   }
 
   isQuietAt(at: Date, quiet: { start: number; end: number }): boolean {

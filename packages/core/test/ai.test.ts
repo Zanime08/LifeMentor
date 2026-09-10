@@ -184,6 +184,49 @@ describe('orchestrator tool loop', () => {
     await app.close();
   });
 
+  it('runs the exact proposed call when the user answers the confirmation', async () => {
+    const app = await openApp();
+    const task = await app.services.tasks.create({ title: 'Купить билеты', estimated_minutes: 15 });
+
+    const turn = await app.ai.orchestrator.chat(`Cancel task ${task.id}`);
+    const request = turn.confirmations[0];
+    expect(request.tool).toBe('cancel_task');
+    // The interface used to ignore `turn.confirmations` entirely: the question was asked, the user
+    // answered «да», and the same refusal came back — the tool could never run (req. 22–24).
+    expect((await app.services.tasks.get(task.id))?.status).not.toBe('cancelled');
+
+    const approved = await app.ai.orchestrator.resolveConfirmation(request, {
+      approved: true, conversationId: turn.conversationId, replyText: 'Готово: отменил задачу.',
+    });
+    expect(approved.ok).toBe(true);
+    expect(approved.outcome?.ok).toBe(true);
+    expect((await app.services.tasks.get(task.id))?.status).toBe('cancelled');
+    // The decision is part of the conversation: the next turn knows what was done.
+    expect(approved.reply).toBe('Готово: отменил задачу.');
+    const history = await app.ai.conversations.history(turn.conversationId, 20);
+    expect(history.some((m) => m.role === 'assistant' && m.content === 'Готово: отменил задачу.')).toBe(true);
+
+    await app.close();
+  });
+
+  it('does nothing when the user refuses, and records the refusal', async () => {
+    const app = await openApp();
+    const task = await app.services.tasks.create({ title: 'Ненужная задача', estimated_minutes: 15 });
+    const turn = await app.ai.orchestrator.chat(`Cancel task ${task.id}`);
+
+    const refused = await app.ai.orchestrator.resolveConfirmation(turn.confirmations[0], {
+      approved: false, conversationId: turn.conversationId, replyText: 'Отменено — ничего не менял.',
+    });
+    expect(refused.ok).toBe(false);
+    expect(refused.outcome).toBeNull();
+    expect((await app.services.tasks.get(task.id))?.status).not.toBe('cancelled');
+    // The refusal is in the history, so the model does not silently repeat the proposal.
+    const history = await app.ai.conversations.history(turn.conversationId, 20);
+    expect(history.some((m) => m.role === 'assistant' && m.content === 'Отменено — ничего не менял.')).toBe(true);
+
+    await app.close();
+  });
+
   it('rejects an impossible schedule instead of double-booking the calendar', async () => {
     const app = await openApp();
     await app.services.calendar.create({ title: 'Dentist', day: dayKey(), start: '15:00', end: '16:00', kind: 'health', priority: 'critical' });

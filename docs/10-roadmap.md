@@ -28,11 +28,11 @@ that exposes it is tracked separately, because a service without a screen is not
 | 15 | Notifications | ✅ **web push + FCM done** — client budget/quiet-hours/smart reminders + local scheduling; server: VAPID Web Push (subscribe/poll/deliver queue, urgent-news push with daily cap), **FCM v1 transport** (RS256 service-account JWT, token revocation, urgent = visible OS notification, data-only otherwise), service worker, polling fallback as the guaranteed path. Activation is external: a Firebase project for `ai.lifementor.app` + a server service account (docs/11 §FCM). |
 | 16 | Sync + offline (queue, incremental push/pull, conflicts) | ✅ done end to end — client engine, server API, two-device integration test |
 | 17 | Backup + restore + export/import + account deletion | ✅ done (local images, JSON archives, rotation, purge, **cloud backup slot**: client-side AES-GCM, server stores ciphertext + sha256, `POST/GET/DELETE /v1/backup`) |
-| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 207 automated tests passing (33 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **bundle boot test (builds `dist/main.mjs` and calls the running server)** + **packaged-archive test (self-contained start on an unconfigured machine)** + **client-bundle credential guard (scans the built client for keys/secrets, with a self-test)** + **dialog contract (keyboard focus, announcement, Escape)** + **`init:env` test** + **maintenance phase gate (snapshots/reviews/backup/retention on a real clock, 10 tests)** + **real clients against the shipped server bundle (register → two-device sync → AI gateway on a keyless machine)** + **notification gate (quiet hours across a restart, per-type silence, daily budget, first-launch reconciliation)** + **screen-load guard (no silent `.catch`, a failure is shown with a retry)** + **route-level code splitting (every screen its own chunk, guarded at the source and in the built bundle)** + **screen error boundary (a screen that cannot load does not take the app down)** + **UI journey tests driving the real client under jsdom**) |
+| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 231 automated tests passing (38 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **bundle boot test (builds `dist/main.mjs` and calls the running server)** + **packaged-archive test (self-contained start on an unconfigured machine)** + **client-bundle credential guard (scans the built client for keys/secrets, with a self-test)** + **dialog contract (keyboard focus, announcement, Escape)** + **`init:env` test** + **maintenance phase gate (snapshots/reviews/backup/retention on a real clock, 10 tests)** + **real clients against the shipped server bundle (register → two-device sync → AI gateway on a keyless machine)** + **notification gate (quiet hours across a restart, per-type silence, daily budget, first-launch reconciliation)** + **screen-load guard (no silent `.catch`, a failure is shown with a retry)** + **route-level code splitting (every screen its own chunk, guarded at the source and in the built bundle)** + **screen error boundary (a screen that cannot load does not take the app down)** + **UI journey tests driving the real client under jsdom**) |
 | 19 | Packaging (Windows NSIS/MSI, Android APK, server release bundle) | 🟡 **one command away** — `npm run package:server` produces a self-contained server archive (single 2 MB `.mjs`, launcher, autostart script, README) that starts on a machine with no dependencies and writes its own stable `.env`; the Windows NSIS installer and the signed APK are built by `release.yml` (Rust/JDK) and attached to the GitHub Release by the `publish` job, with a server bundle artifact next to them — `docs/11-packaging.md` |
 | 20 | Polishing (UI density, empty states, error copy, perf, a11y, hardening) | 🟡 in progress — error copy, toast a11y, icon-button audit, empty states, performance audit, **UI test layer**, **route-level code splitting with a checked startup budget** and the hardening round below are done; deep profiling on a real device is left |
 
-**Test suite today:** 207 tests, 33 files — `packages/core/test` (public API, persistence + WASM
+**Test suite today:** 231 tests, 38 files — `packages/core/test` (public API, persistence + WASM
 driver durability, **Tauri and Capacitor driver contracts — the exact `sql_*` invoke shapes and
 v8 plugin API the shells implement, run against emulated Rust/Android engines**, sync/backup/
 recovery, auth, AI, onboarding), `apps/server/test` (auth API, sync API, AI gateway, news engine
@@ -272,6 +272,48 @@ wrote).
        back from the database, so the UI, the AI context and the history always agree.
      * the Mentor screen took the whole chat down when `Element.scrollTo` was missing (older
        Android WebViews, non-browser DOM hosts) — guarded.
+     * **an import was offered for a file nobody had looked at**: Settings listed «Слить с текущим /
+       Заменить всё» for whatever JSON the user picked, and `previewImport()` — which says exactly
+       what would be created, updated, skipped and deleted, and which sections could not be read at
+       all — was called by nothing. A file from a newer build, someone else's JSON or a tampered
+       export was indistinguishable from a clean one until after the account had been replaced with
+       it (the failure case only surfaced as an English toast). The file is now parsed, validated and
+       *described* the moment it is chosen: totals («Создано: 12 · Обновлено: 3 · Пропущено: 1»), the
+       sections in Russian with their row counts, and every warning worded (`importWarningText`) —
+       an unknown section, settings this build does not know (previously dropped in silence), or a
+       settings block that does not match the current schema. A file that is not an archive is
+       refused with a sentence that says so and no buttons at all. `import-preview.test.tsx` drives
+       the real file input over the real engine, including an archive exported by a *second* client
+       and merged into this account.
+     * **the one thing the assistant could not do was anything that mattered**: ten tools carry a
+       `confirm` policy — delete an event, cancel a task, archive a goal, raise a task to P0, record a
+       skill assessment, save a confirmed fact, build a plan for another day — and the registry
+       refuses to run any of them without the user's approval of *that exact call*. The refusal
+       travelled back to the client as `turn.confirmations`; the chat screen read `turn.reply`,
+       `turn.messageId` and `turn.needsInput` and ignored `confirmations` entirely, and no code path
+       anywhere passed `approved`. So the same blocking question came back no matter how many times
+       the user said «да, удали», and the whole destructive half of the product was dead — with the
+       engine perfectly willing. `resolveConfirmation(request, {approved, conversationId})` now runs
+       the proposed call with the approval attached (the *proposed* arguments, so the approval cannot
+       be stretched into more power than was shown), records the decision in the conversation — tool
+       row plus the assistant's sentence, so the next turn knows what was done — and the chat renders
+       the pending list above the composer with «Разрешить» / «Отменить» beside the action named the
+       way the user named it (a raw UUID never reaches the question). `mentor-approval.test.tsx` drives
+       the screen, the registry and SQLite together: while the question is open the task is untouched,
+       approving cancels it and puts «Готово: отменил задачу.» in the history, refusing leaves the
+       event exactly as it was.
+     * **the plan and the notifications described the day in English**: the planner is deterministic
+       engine code that wrote «Free time», «due today», «2 tasks postponed» into the plan the user
+       reads on Today and Dashboard, and the notifications service built the reminder text the same
+       way — the screens had grown Russian wording of their own in three places, drifting from each
+       other each time a rule changed. Every plan note now exists twice: the English sentence stays
+       for the AI context, the export and the logs, and a `PlanNote` code (19 of them) carries the
+       numbers for the interface, which words it once in `lib/plan.ts` (Today, Dashboard, notifications
+       all read the same helper); the language is decided in the engine (`ai.language`, then the profile
+       locale) for reminders, with `pluralRu` agreement («1 пункт не вошёл» / «5 пунктов не вошли»).
+       An unknown code falls back to the stored English sentence rather than rendering nothing, and
+       `packages/core/test/plan-text.test.ts` reads `planner.ts` for `code: '…'` literals so a new rule
+       cannot ship without a wording.
    - **Remaining**: deep performance profiling (separate phase, needs a real device).
 
 ## Web UI — what is built (`apps/web`, React + Vite, runs as the dev preview)
@@ -307,7 +349,7 @@ npm start                   # run the bundle
 # Secrets (JWT_SECRET, provider keys, VAPID) go in a .env file in the repo
 # root (copy .env.example) — read by the server, gitignored, never sent to clients.
 
-npm test                    # 207 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
+npm test                    # 231 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
 npm run typecheck           # tsc --noEmit over the whole monorepo
 npm run check:client-secrets  # no provider keys / JWT secrets in the built client
 npm run check:client-budget   # screens stay lazy: startup download within its gzip budget

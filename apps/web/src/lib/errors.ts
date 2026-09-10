@@ -22,6 +22,13 @@ export function userError(e: unknown): string {
   if (/invalid date|invalid identifier|unsafe (column|identifier)/i.test(msg)) {
     return 'Не удалось обработать данные. Попробуйте ещё раз.';
   }
+  // A file the user chose for import: say which file, not «что-то пошло не так».
+  if (/newer than this build|by a newer version of lifementor/i.test(msg)) {
+    return 'Этот архив создан более новой версией LifeMentor. Обновите приложение и попробуйте снова.';
+  }
+  if (/not valid json|not a lifementor export archive|has no manifest|has no data section|missing format_version/i.test(msg)) {
+    return 'Это не архив LifeMentor. Выберите файл, созданный кнопкой «Export my data».';
+  }
   // Backup/restore.
   if (/backup not found/i.test(msg)) return 'Резервная копия не найдена.';
   if (/snapshot is too small|restore/i.test(msg)) return 'Восстановление не удалось — снимок повреждён.';

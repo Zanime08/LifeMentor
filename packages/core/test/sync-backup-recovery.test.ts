@@ -470,6 +470,43 @@ describe('export and import', () => {
     await target.close();
   });
 
+  it('describes the file it is about to import, in codes the interface can word itself', async () => {
+    const source = await openDevice('device-source');
+    await source.services.goals.create({ title: 'Move to Berlin', horizon: 'long' });
+    const archive = await source.services.backup.exportArchive();
+    await source.close();
+
+    const target = await openDevice('device-target');
+    // A file from a newer build: a section this build cannot read, and settings it does not know.
+    const preview = await target.services.backup.previewImport({
+      ...archive,
+      data: {
+        ...archive.data,
+        holo_deck: [{ id: 'x', title: 'from the future' }],
+        setting: [{ key: 'planning', value: '{not json' }, { key: 'holo_deck', value: '{}' }],
+      },
+    } as typeof archive);
+
+    // `warnings` stays the English sentence for the log; `warning_items` is what a screen reads.
+    expect(preview.warnings.some((w) => /Unknown entity type "holo_deck"/.test(w))).toBe(true);
+    expect(preview.warning_items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'unknown_entity', entity: 'holo_deck' }),
+        expect.objectContaining({ code: 'invalid_settings', entity: 'planning' }),
+        expect.objectContaining({ code: 'unknown_settings_group', entity: 'holo_deck' }),
+      ]),
+    );
+    const unreadable = preview.warning_items.find((w) => w.code === 'invalid_settings');
+    expect(unreadable?.raw).toBeTruthy(); // a client that does not know the code still has words
+
+    // A clean archive of the same data has nothing to warn about.
+    const clean = await target.services.backup.previewImport(archive);
+    expect(clean.warning_items).toEqual([]);
+    expect(clean.valid).toBe(true);
+
+    await target.close();
+  });
+
   it('rejects an archive from a much newer format', async () => {
     const app = await openDevice('device-a');
     const bad = JSON.stringify({ manifest: { format_version: 99, counts: {} }, data: {} });

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { LifeMentorApp, RecoveryReport } from '@lifementor/core';
+import type { ImportPreview, LifeMentorApp, RecoveryReport } from '@lifementor/core';
 import { Btn, Card, Confirm, Field, I, LoadFailure, Modal, PageHead, Select, Spinner, Tag, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
 import { loadSafely } from '../lib/load';
@@ -9,6 +9,7 @@ import { disablePush, enablePush, getPushState, sendTestPush } from '../push';
 import { cloudBackupStatus, deleteCloudBackup, downloadCloudBackup, uploadCloudBackup, type CloudBackupStatus } from '../cloud-backup';
 import { timeAgo } from '../lib/ru';
 import { userError } from '../lib/errors';
+import { entityRu, importWarningText } from '../lib/import-ru';
 
 type Health = Awaited<ReturnType<LifeMentorApp['health']>>;
 
@@ -232,7 +233,14 @@ function SyncTab() {
 function DataTab() {
   const { app, mutate, toast, toastError, hardReset, auth } = useApp();
   const [backups, setBackups] = useState<Awaited<ReturnType<import('@lifementor/core').BackupService['list']>>>([]);
-  const [importPreview, setImportPreview] = useState<{ name: string; data: string } | null>(null);
+  /**
+   * The file the user picked, already checked against the schema and *looked at* — the engine says
+   * what the import would create, update, skip and delete, and which sections it cannot read at all.
+   * Without this the screen asked «Слить с текущим / Заменить всё» about a file nobody had examined,
+   * and the warnings existed only in a return value the interface never read (req. 54).
+   */
+  const [importPreview, setImportPreview] = useState<{ name: string; data: string; preview: ImportPreview } | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
   const [exportFirst, setExportFirst] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [cloud, setCloud] = useState<CloudBackupStatus | null>(null);
@@ -273,10 +281,25 @@ function DataTab() {
     }
   };
 
+  /** Parse, validate and *describe* an archive before offering to apply it. */
+  const prepareImport = async (name: string, data: string) => {
+    setImportError(null);
+    try {
+      const archive = await app!.services.backup.parseArchive(data);
+      const preview = await app!.services.backup.previewImport(archive);
+      setImportPreview({ name, data, preview });
+    } catch (e) {
+      // A file that is not a LifeMentor archive is refused here, in words, before any button
+      // offers to replace the account with it.
+      if (e instanceof Error) console.warn('[lifementor] import rejected:', e.message);
+      setImportPreview(null);
+      setImportError(userError(e));
+    }
+  };
+
   const onImportFile = async (file: File) => {
     try {
-      const text = await file.text();
-      setImportPreview({ name: file.name, data: text });
+      await prepareImport(file.name, await file.text());
     } catch (e) {
       toastError(e);
     }
@@ -323,10 +346,49 @@ function DataTab() {
           <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: 'none' }}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportFile(f); e.target.value = ''; }} />
         </div>
+        {importError && (
+          <div className="proactive mt" style={{ background: 'var(--red-soft, #fdecea)', borderColor: '#f0c0bb' }} role="alert">
+            <b>Файл не подходит</b>
+            <div className="small mt-sm">{importError}</div>
+          </div>
+        )}
         {importPreview && (
           <div className="proactive mt">
             <b>Файл: {importPreview.name}</b>
-            <div className="small mt-sm">Перед импортом: структура и версия проверены, текущее состояние — в резервной копии. Выберите режим:</div>
+            {/* The engine looked at the file: what will appear, what will be overwritten, what it
+                could not read. The user decides with those numbers in front of them. */}
+            <div className="small mt-sm">
+              Создано: {importPreview.preview.totals.create} · Обновлено: {importPreview.preview.totals.update} · Пропущено: {importPreview.preview.totals.skip}
+              {importPreview.preview.totals.delete > 0 ? ` · Удалено: ${importPreview.preview.totals.delete}` : ''}
+            </div>
+            {importPreview.preview.entities.filter((e) => e.incoming > 0).length > 0 && (
+              <div className="xsmall muted mt-sm" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                {importPreview.preview.entities.filter((e) => e.incoming > 0).slice(0, 14).map((e) => (
+                  <span key={e.entity_type}>{entityRu(e.entity_type)}: {e.incoming}</span>
+                ))}
+                {importPreview.preview.entities.filter((e) => e.incoming > 0).length > 14
+                  ? <span>и ещё {importPreview.preview.entities.filter((e) => e.incoming > 0).length - 14}</span>
+                  : null}
+              </div>
+            )}
+            {importPreview.preview.warning_items.length > 0 && (
+              <div className="small mt-sm" style={{ color: 'var(--danger, #b3261e)' }} role="alert">
+                {importPreview.preview.warning_items.map((w, index) => (
+                  <div key={`${w.code}-${w.entity ?? index}`}>• {importWarningText(w)}</div>
+                ))}
+              </div>
+            )}
+            {!importPreview.preview.valid && (
+              <div className="small mt-sm" style={{ color: 'var(--danger, #b3261e)' }}>
+                Файл выглядит повреждённым. Импорт перенесёт только то, что удалось прочитать.
+              </div>
+            )}
+            {importPreview.preview.totals.create === 0 && importPreview.preview.totals.update === 0 && (
+              <div className="small mt-sm muted">
+                Новых данных в файле нет — импорт ничего не изменит. Проверьте, что это тот архив.
+              </div>
+            )}
+            <div className="small mt-sm">Перед импортом текущее состояние сохраняется в резервную копию. Выберите режим:</div>
             <div className="row mt-sm">
               <Btn size="sm" kind="primary" onClick={() => void applyImport('merge')}>Слить с текущим</Btn>
               <Btn size="sm" kind="danger" onClick={() => void applyImport('replace')}>Заменить всё</Btn>
@@ -356,7 +418,7 @@ function DataTab() {
           })}>{I.cloud} Загрузить копию</Btn>
           <Btn size="sm" disabled={cloudBusy || !cloud?.exists} onClick={() => void runCloud(async () => {
             const { archive } = await downloadCloudBackup(app!);
-            setImportPreview({ name: 'облачная копия (расшифрована)', data: JSON.stringify(archive) });
+            await prepareImport('облачная копия (расшифрована)', JSON.stringify(archive));
             toast('Копия расшифрована и проверена. Выберите режим импорта ниже.', 'ok');
           })}>Скачать и импортировать</Btn>
           <Btn size="sm" kind="danger" disabled={cloudBusy || !cloud?.exists} onClick={() => void runCloud(async () => {

@@ -243,6 +243,10 @@ describe('first run in the browser client (dom, real engine)', () => {
       expect(events.some((e) => e.title === 'Экзамен по математике')).toBe(true);
     }, { timeout: 20_000 });
 
+    // A task with a deadline today: the planner explains on the block *why* it is there, and that
+    // explanation is one of the sentences that used to arrive in English («due today»).
+    await openApp()!.services.tasks.create({ title: 'Сдать лабораторную', due_date: today, estimated_minutes: 40, priority: 'P1' });
+
     // Ask the planner to fill the day through the UI.
     window.location.hash = '#/today';
     await waitFor(() => expect(screen.getByText('Все задачи на день')).toBeTruthy(), { timeout: 30_000 });
@@ -265,6 +269,23 @@ describe('first run in the browser client (dom, real engine)', () => {
     // And the screen says the same thing: the event is listed as a fixed commitment.
     expect(await screen.findByText('Обязательные события', {}, { timeout: 20_000 })).toBeTruthy();
     expect(screen.getAllByText('Экзамен по математике').length).toBeGreaterThan(0);
+
+    // Every remark the plan makes about itself exists in the user's language as well as in English
+    // (the English form is what the AI context and the export read).
+    expect(planned.warning_items?.length ?? 0).toBe(planned.warnings.length);
+    for (const slot of planned.slots.filter((sl) => sl.generated_title)) {
+      expect(slot.generated_title, `блок «${slot.title}» без структурированного названия`).toBeTruthy();
+    }
+
+    // The plan the user reads is Russian: the planner used to print its own English sentences
+    // straight into the plan («fixed commitment — nothing is scheduled over this», «due today»),
+    // and they appeared on the primary screen of the app.
+    const plannedContent = (document.querySelector('.content')?.textContent ?? '').replace(/\s+/g, ' ');
+    expect(plannedContent).toContain('срок сегодня');
+    expect(plannedContent).toContain('Свободное время');
+    for (const english of ['Free time', 'fixed commitment', 'item(s)', 'due today', 'Spaced repetition', 'serves a goal', 'marked important']) {
+      expect(plannedContent, `в плане на экране осталась английская фраза «${english}»`).not.toContain(english);
+    }
   }, 120_000);
 
   it('never books an overlap silently: the event form says what it collides with (req. 31, 82, 83)', async () => {

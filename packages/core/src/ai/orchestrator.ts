@@ -256,6 +256,66 @@ export class AIOrchestrator {
   }
 
   /**
+   * Finish a step the model proposed and the user has now decided about (req. 22–24).
+   *
+   * Some tools are destructive (`delete_calendar_event`, `cancel_task`, `delete_memory`) or change
+   * something the user should see first (raising a task to P0, archiving a goal, saving a confirmed
+   * fact). The registry refuses to run them without an approval id and hands the model a question to
+   * put to the user. Nothing in the interface ever answered that question, so those tools could
+   * never run at all — the user said "да, удали" and the same refusal came back.
+   *
+   * `resolveConfirmation` executes **the call the model already proposed**, with the user's explicit
+   * approval, and records both the tool row and the answer in the conversation, so the next turn
+   * knows what happened. The model gets no extra power: the arguments are exactly the ones the user
+   * saw before approving.
+   *
+   * `replyText` is composed by the caller (the interface words it for the reader); the fallback is a
+   * neutral English sentence for callers that have no interface — tests, scripts, an API client.
+   */
+  async resolveConfirmation(
+    request: ConfirmationRequest,
+    options: { approved: boolean; conversationId: string; replyText?: string; write?: WriteContext },
+  ): Promise<{ ok: boolean; tool: string; outcome: ToolOutcome | null; conversationId: string; messageId: string; reply: string }> {
+    const conversation = await this.requireConversation(options.conversationId);
+    const write = options.write ?? AI_WRITE;
+    const settings = await this.deps.settings.all();
+    let outcome: ToolOutcome | null = null;
+
+    if (options.approved) {
+      const ctx: ToolInvocationContext = {
+        write: { ...write, deviceId: this.deps.deviceId },
+        // The approval is scoped to exactly this call: the id the registry computed for these
+        // arguments, and the tool name (the registry accepts either).
+        day: dayKey(), intent: 'approval', now: new Date(), approved: [request.id, request.tool],
+        language: settings.ai.language,
+      };
+      // The arguments come back from the model as JSON; the registry validates them again anyway
+      // (a refused confirmation is a normal answer, never an exception).
+      const args = (request.args ?? {}) as Record<string, unknown>;
+      outcome = await this.deps.tools.invoke(request.tool, args, ctx);
+    }
+
+    await this.deps.conversations.addTool(conversation.id, request.tool, JSON.stringify({
+      args: request.args, ok: outcome?.ok ?? false, approved: options.approved, message: outcome?.message ?? null,
+    }), write);
+
+    const reply = options.replyText?.trim()
+      || (options.approved
+        ? (outcome?.ok ? `Done: ${request.tool}.` : `That did not work: ${outcome?.message ?? 'unknown reason'}`)
+        : `Cancelled: ${request.tool} was not run.`);
+
+    const message = await this.deps.conversations.addAssistant(conversation.id, reply, {
+      provider: options.approved ? 'user-approval' : 'user-refusal',
+      model: request.tool,
+      tokens: estimateTokens(reply),
+      latencyMs: 0,
+      toolCalls: [{ name: request.tool, ok: outcome?.ok ?? false }],
+    }, write);
+
+    return { ok: outcome?.ok ?? false, tool: request.tool, outcome, conversationId: conversation.id, messageId: message.id, reply };
+  }
+
+  /**
    * Structured request (no tools): planning proposals, reviews, news structuring,
    * interview questions. Validated against a zod schema with one repair attempt
    * handled by the provider layer.

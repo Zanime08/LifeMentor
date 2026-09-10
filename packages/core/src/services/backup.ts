@@ -48,10 +48,31 @@ export interface ExportArchive {
   data: Record<string, Record<string, unknown>[]>;
 }
 
+/**
+ * A problem with the file being imported, as a code plus the numbers behind it (req. 6, 7).
+ *
+ * `warnings` stays as the English sentence for the log and for support; the interface words
+ * `warning_items` itself, because these sentences are the *only* thing telling the user that part of
+ * their archive will not arrive — and they read them before pressing «Заменить всё».
+ */
+export type ImportWarningCode = 'newer_format' | 'unknown_entity' | 'not_a_list' | 'invalid_settings' | 'unknown_settings_group';
+
+export interface ImportWarning {
+  code: ImportWarningCode;
+  /** Entity type the warning is about, when it is about one. */
+  entity?: string;
+  /** Format version the file was written in, and the one this build understands. */
+  found?: number;
+  supported?: number;
+  /** Raw sentence, used as a fallback when a client does not know the code yet. */
+  raw: string;
+}
+
 export interface ImportPreview {
   entities: { entity_type: string; incoming: number; create: number; update: number; skip: number; delete: number }[];
   totals: { create: number; update: number; skip: number; delete: number };
   warnings: string[];
+  warning_items: ImportWarning[];
   valid: boolean;
 }
 
@@ -250,16 +271,29 @@ export class BackupService {
   /** What an import would change — nothing is written here. */
   async previewImport(archive: ExportArchive): Promise<ImportPreview> {
     const warnings: string[] = [];
+    const warningItems: ImportWarning[] = [];
+    const warn = (item: ImportWarning): void => { warnings.push(item.raw); warningItems.push(item); };
     if (archive.manifest.format_version > EXPORT_FORMAT_VERSION) {
-      warnings.push(`This export was created by a newer LifeMentor format (v${archive.manifest.format_version}); this build understands v${EXPORT_FORMAT_VERSION}.`);
+      warn({
+        code: 'newer_format',
+        found: archive.manifest.format_version,
+        supported: EXPORT_FORMAT_VERSION,
+        raw: `This export was created by a newer LifeMentor format (v${archive.manifest.format_version}); this build understands v${EXPORT_FORMAT_VERSION}.`,
+      });
     }
     const entities: ImportPreview['entities'] = [];
     const totals = { create: 0, update: 0, skip: 0, delete: 0 };
 
     for (const [entityType, rows] of Object.entries(archive.data)) {
       const repo = this.deps.repos.byEntityType(entityType);
-      if (!repo) { warnings.push(`Unknown entity type "${entityType}" — skipped.`); continue; }
-      if (!Array.isArray(rows)) { warnings.push(`"${entityType}" is not a list — skipped.`); continue; }
+      if (!repo) {
+        warn({ code: 'unknown_entity', entity: entityType, raw: `Unknown entity type "${entityType}" — skipped.` });
+        continue;
+      }
+      if (!Array.isArray(rows)) {
+        warn({ code: 'not_a_list', entity: entityType, raw: `"${entityType}" is not a list — skipped.` });
+        continue;
+      }
       const stats = { entity_type: entityType, incoming: rows.length, create: 0, update: 0, skip: 0, delete: 0 };
       for (const row of rows) {
         const id = primaryKeyValue(repo, row);
@@ -274,10 +308,11 @@ export class BackupService {
       entities.push(stats);
     }
 
-    const settingsIssue = validateSettingsRows(archive.data.setting ?? []);
-    if (settingsIssue) warnings.push(settingsIssue);
+    // A settings row that cannot be used is a warning, not a corruption: the rest of the archive
+    // still imports. (The `valid` flag below stays reserved for genuinely unreadable data.)
+    for (const problem of validateSettingsRows(archive.data.setting ?? [])) warn(problem);
 
-    return { entities, totals, warnings, valid: warnings.every((w) => !/not valid|corrupt/i.test(w)) };
+    return { entities, totals, warnings, warning_items: warningItems, valid: warnings.every((w) => !/not valid|corrupt/i.test(w)) };
   }
 
   /**
@@ -422,20 +457,39 @@ function validateArchive(parsed: unknown): ExportArchive {
   };
 }
 
-function validateSettingsRows(rows: Record<string, unknown>[]): string | null {
+function validateSettingsRows(rows: Record<string, unknown>[]): ImportWarning[] {
+  const problems: ImportWarning[] = [];
   for (const row of rows) {
     const key = String(row.key ?? '');
     const schema = SETTINGS_GROUPS[key as SettingsGroup];
-    if (!schema) continue;
+    if (!schema) {
+      // A settings block this build does not have. It is dropped on import, and the user is told:
+      // settings an older or newer build wrote would otherwise disappear without a word.
+      if (key) {
+        problems.push({
+          code: 'unknown_settings_group',
+          entity: key,
+          raw: `Settings group "${key}" is not known to this build — skipped.`,
+        });
+      }
+      continue;
+    }
     try {
       const value = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
       const result = schema.safeParse(value);
-      if (!result.success) return `Stored settings group "${key}" does not match the current schema (${result.error.issues[0]?.message ?? 'invalid'}).`;
+      if (!result.success) {
+        problems.push({
+          code: 'invalid_settings',
+          entity: key,
+          raw: `Stored settings group "${key}" does not match the current schema (${result.error.issues[0]?.message ?? 'invalid'}).`,
+        });
+        continue;
+      }
     } catch {
-      return `Stored settings group "${key}" is not valid JSON.`;
+      problems.push({ code: 'invalid_settings', entity: key, raw: `Stored settings group "${key}" is not valid JSON.` });
     }
   }
-  return null;
+  return problems;
 }
 
 function looksLikeSqlite(bytes: Uint8Array): boolean {

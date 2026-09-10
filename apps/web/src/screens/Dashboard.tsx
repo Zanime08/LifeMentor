@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Briefing, DayPlan, Goal, Project, LearningPath, NewsItem, Skill } from '@lifementor/core';
+import { slotTitle } from '../lib/plan';
 import { Btn, Card, Empty, I, Progress, Spinner, Tag } from '../components/ui';
 import { useApp } from '../state/store';
 import { ENERGY_RU, HORizons_RU, fmtDayDow, fmtMinutes, hm, todayKey } from '../lib/ru';
@@ -111,7 +112,7 @@ export function Dashboard() {
               {data.plan.slots.slice(0, 6).map((s, i) => (
                 <div key={i} className="row small" style={{ padding: '5px 0', gap: 10 }}>
                   <span className="muted" style={{ width: 84, fontVariantNumeric: 'tabular-nums' }}>{s.start}–{s.end}</span>
-                  <span className={`grow ${s.kind === 'task' ? 'font-medium' : 'muted'}`}>{s.title}</span>
+                  <span className={`grow ${s.kind === 'task' ? 'font-medium' : 'muted'}`}>{slotTitle(s)}</span>
                   {s.priority && <Tag tone={`p${s.priority.slice(1)}`}>{s.priority}</Tag>}
                   {s.energy && <span className="xsmall muted">{ENERGY_RU[s.energy]}</span>}
                 </div>

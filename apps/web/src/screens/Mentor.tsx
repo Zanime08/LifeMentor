@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { Message, TurnResult } from '@lifementor/core';
+import type { ConfirmationRequest, Message, TurnResult } from '@lifementor/core';
 import { Btn, I, Spinner, TextArea, Tag } from '../components/ui';
 import { useApp } from '../state/store';
 import { bestEffort } from '../lib/load';
+import { confirmationText } from '../lib/confirm-ru';
 
 interface ChatMsg {
   id: string;
@@ -12,42 +13,91 @@ interface ChatMsg {
   meta?: string;
 }
 
+/**
+ * What the mentor did, in the user's words (phase-20 i18n).
+ *
+ * The chips under an answer name the tools the model actually ran. The names are engine identifiers
+ * (`plan_day`, `create_calendar_event`) and the list had drifted: it labelled eleven tools that no
+ * longer exist and left fourteen real ones (including `plan_day` and `send_notification`) showing
+ * their raw snake_case name in the chat. `mentor-tools-ru.test.ts` reads the registry and fails if a
+ * tool ever lacks a label again.
+ */
 const TOOL_RU: Record<string, string> = {
-  get_user_profile: 'читал профиль',
+  // reading
+  get_user_model: 'посмотрел профиль',
+  get_user_profile: 'посмотрел профиль',
   get_user_memory: 'заглянул в память',
+  get_preferences: 'посмотрел настройки',
+  get_progress: 'посмотрел прогресс',
+  get_goals: 'посмотрел цели',
+  get_tasks: 'посмотрел задачи',
+  get_schedule: 'посмотрел расписание',
+  get_skills: 'посмотрел навыки',
+  get_learning: 'посмотрел обучение',
+  get_news: 'посмотрел новости',
+  search_knowledge: 'поискал в знаниях',
+  // goals & tasks
   create_goal: 'создал цель',
   update_goal: 'обновил цель',
-  archive_goal: 'архивировал цель',
-  get_skills: 'просмотрел навыки',
-  assess_skill: 'оценил навык',
   create_task: 'создал задачу',
+  update_task: 'изменил задачу',
   complete_task: 'завершил задачу',
+  cancel_task: 'отменил задачу',
   reschedule_task: 'перенёс задачу',
+  plan_day: 'построил план дня',
+  // schedule
   create_calendar_event: 'добавил событие',
-  update_calendar_event: 'изменил событие',
-  get_schedule: 'просмотрел расписание',
-  rebuild_schedule: 'пересобрал день',
+  delete_calendar_event: 'удалил событие',
+  // learning, projects, skills
   create_learning_path: 'создал путь обучения',
   update_learning_progress: 'обновил прогресс обучения',
-  get_project: 'открыл проект',
-  update_project: 'обновил проект',
-  create_notification: 'поставил напоминание',
-  get_recent_news: 'посмотрел новости',
-  get_important_news: 'посмотрел важные новости',
+  create_project: 'создал проект',
+  assess_skill: 'оценил навык',
+  // memory & messages
   save_memory: 'запомнил',
-  update_memory: 'обновил память',
   delete_memory: 'удалил из памяти',
-  suggest_learning: 'предложил обучение',
-  get_progress: 'посмотрел прогресс',
+  update_user_model: 'поправил профиль',
+  send_notification: 'поставил напоминание',
 };
 
+/**
+ * The refusal reasons the notification gate reports. The engine sends the model an English sentence
+ * («Not sent — the notification gate refused it (budget_exhausted)…») and that sentence used to be
+ * printed into the chip verbatim; the user gets the reason in their own language and the engine's
+ * wording stays in the console.
+ */
+const NOTIFICATION_REFUSAL_RU: Record<string, string> = {
+  disabled: 'уведомления выключены в настройках',
+  type_disabled: 'этот вид уведомлений выключен',
+  budget_exhausted: 'дневной лимит уведомлений исчерпан',
+  duplicate: 'такое напоминание уже было недавно',
+  invalid: 'напоминание не прошло проверку',
+};
+
+/** Why a tool did not work, as far as the user needs to know. */
+function failureDetail(outcome: { message: string; data?: unknown; needsInput?: string; error?: string }): string | undefined {
+  const data = outcome.data as { reason?: string } | undefined;
+  if (data?.reason && NOTIFICATION_REFUSAL_RU[data.reason]) return NOTIFICATION_REFUSAL_RU[data.reason];
+  if (outcome.needsInput) return 'нужно уточнить детали';
+  if (outcome.error) return 'не получилось — причина в журнале';
+  return undefined;
+}
+
+
 export function Mentor() {
-  const { app, mutate, toast, online } = useApp();
+  const { app, mutate, toast, toastError, refresh, online } = useApp();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [proactive, setProactive] = useState<string | null>(null);
   const [convId, setConvId] = useState<string | null>(null);
+  /**
+   * Calls the model proposed and the engine refuses to run without the user's word — deleting an
+   * event, cancelling a task, archiving a goal, raising a task to P0. The registry produced the
+   * question, the interface never showed it, and the answer never existed: those tools could not run
+   * at all, no matter how many times the user said «да, удали».
+   */
+  const [pending, setPending] = useState<ConfirmationRequest[]>([]);
   const [draftRestored, setDraftRestored] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const booted = useRef(false);
@@ -135,7 +185,7 @@ export function Mentor() {
         tools: turn.toolCalls.map((tc) => ({
           name: tc.call.name,
           ok: tc.outcome.ok,
-          detail: tc.outcome.ok ? undefined : tc.outcome.message,
+          detail: tc.outcome.ok ? undefined : failureDetail(tc.outcome),
         })),
         meta: [
           turn.offline ? 'офлайн-движок' : `модель: ${turn.model}`,
@@ -144,6 +194,7 @@ export function Mentor() {
         ].filter(Boolean).join(' · '),
       };
       setMessages((m) => [...m, assistant]);
+      setPending(turn.confirmations ?? []);
       if (turn.needsInput) setProactive(turn.needsInput);
     } catch (error) {
       const msg = error && typeof error === 'object' && 'userMessage' in error
@@ -156,12 +207,58 @@ export function Mentor() {
     }
   };
 
+  /**
+   * The user's decision about one proposed call. Approving runs exactly the call the model proposed
+   * (the engine already recorded it); refusing records that nothing was done, so the next turn does
+   * not silently repeat the proposal.
+   */
+  const decide = async (request: ConfirmationRequest, approved: boolean) => {
+    if (!app || !convId) return;
+    setBusy(true);
+    try {
+      const result = await app.ai.orchestrator.resolveConfirmation(request, {
+        approved,
+        conversationId: convId,
+        // The engine stores this sentence in the conversation; the wording belongs here.
+        replyText: approved ? `Готово: ${TOOL_RU[request.tool] ?? request.tool}.` : 'Отменено — ничего не менял.',
+      });
+      if (approved && !result.ok) {
+        // A refusal after approval is a real failure the user must see (it changes nothing).
+        setMessages((m) => [...m, { id: result.messageId, role: 'assistant', text: `⚠ Не получилось: ${TOOL_RU[request.tool] ?? request.tool}.`, tools: [{ name: request.tool, ok: false, detail: failureDetail(result.outcome ?? { message: '' }) }] }]);
+      } else {
+        setMessages((m) => [...m, { id: result.messageId, role: 'assistant', text: result.reply, tools: [{ name: request.tool, ok: result.ok }] }]);
+      }
+      setPending((list) => list.filter((c) => c.id !== request.id));
+      refresh();
+    } catch (error) {
+      toastError(error);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="chat-wrap" style={{ height: '100%' }}>
       {proactive && (
         <div className="proactive">
           <b>Наставник:</b> {proactive}
           <button type="button" className="btn ghost sm" style={{ marginLeft: 10, color: 'inherit' }} onClick={() => setProactive(null)}>{I.x}</button>
+        </div>
+      )}
+      {pending.length > 0 && (
+        <div className="proactive" style={{ background: 'var(--gold-soft)', borderColor: '#e4d3a1' }} role="group" aria-label="Нужно ваше решение">
+          {pending.map((request) => (
+            <div key={request.id} className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div className="grow">
+                <b>Нужно ваше решение{request.risk === 'destructive' ? ' — действие необратимо' : ''}</b>
+                {/* The engine's own `detail` is written for the model, in English — the question the
+                    user reads is composed here from the tool and the arguments. */}
+                <div className="small">{confirmationText(request, TOOL_RU[request.tool])}</div>
+              </div>
+              <Btn kind="primary" size="sm" disabled={busy} onClick={() => void decide(request, true)}>Разрешить</Btn>
+              <Btn size="sm" disabled={busy} onClick={() => void decide(request, false)}>Отменить</Btn>
+            </div>
+          ))}
         </div>
       )}
       <div className="chat-scroll" ref={scrollRef}>
