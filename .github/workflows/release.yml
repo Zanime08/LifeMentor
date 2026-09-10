@@ -238,14 +238,32 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Check that the installers exist
+        run: |
+          ls -R artifacts
+          # The two files an ordinary end user downloads. A build job that produced nothing must
+          # stop the release here — not on the download page of the person installing the app.
+          test -n "$(find artifacts/LifeMentor-Windows -name '*.exe' -print -quit)" \
+            || { echo "::error::Windows installer (.exe) missing from the build artifacts"; exit 1; }
+          test -n "$(find artifacts/LifeMentor-Android -name '*.apk' -print -quit)" \
+            || { echo "::error::Android package (.apk) missing from the build artifacts"; exit 1; }
+          test -f artifacts/LifeMentor-Server/lifementor-server.mjs \
+            || { echo "::error::server bundle missing from the build artifacts"; exit 1; }
       - name: Attach the installers to the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ls -R artifacts
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
             gh release create "$GITHUB_REF_NAME" --title "LifeMentor $GITHUB_REF_NAME" --generate-notes
           # Installers users download: the Windows setup, the APK, and the self-hosted server.
-          gh release upload "$GITHUB_REF_NAME" --clobber artifacts/LifeMentor-Windows/* artifacts/LifeMentor-Android/* || true
+          # No `|| true`: a failed upload here leaves a release page that promises files it does not
+          # have, and the run would still be green.
+          gh release upload "$GITHUB_REF_NAME" --clobber artifacts/LifeMentor-Windows/* artifacts/LifeMentor-Android/*
           (cd artifacts/LifeMentor-Server && zip -r ../lifementor-server.zip . >/dev/null)
           gh release upload "$GITHUB_REF_NAME" --clobber artifacts/lifementor-server.zip
+          # And prove it from the API: the release must actually list all three.
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > release-assets.txt
+          cat release-assets.txt
+          grep -Eq '\.exe$' release-assets.txt || { echo "::error::no .exe on the release"; exit 1; }
+          grep -Eq '\.apk$' release-assets.txt || { echo "::error::no .apk on the release"; exit 1; }
+          grep -Eq '^lifementor-server\.zip$' release-assets.txt || { echo "::error::no server zip on the release"; exit 1; }

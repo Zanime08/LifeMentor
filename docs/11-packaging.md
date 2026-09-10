@@ -128,6 +128,12 @@ enabled in the CI-built APK when the repository has the `GOOGLE_SERVICES_JSON_B6
 (base64 of `google-services.json`) — otherwise the APK ships with the polling fallback, as
 above.
 
+The `publish` job attaches those artifacts to the GitHub Release for a `v*` tag. It refuses to
+publish a release that is missing the files an end user actually downloads: the job checks the
+downloaded artifacts for a `.exe`, an `.apk` and the server bundle *before* touching the release,
+fails on a failed `gh release upload` (no `|| true`), and then re-reads the release from the API to
+confirm all three assets are listed.
+
 ## Running the server on your own machine (Windows)
 
 The clients only need a server URL; one machine on the same network can host it. The build output

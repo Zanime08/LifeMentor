@@ -142,6 +142,12 @@ wrote).
        behaviour: the quiet hours the user set survive a restart, urgent events still pass through
        them, the daily budget stops the notification past the limit, and muting one kind leaves the
        others working.
+     * **the release job could publish an empty release**: the step that attaches the installers to
+       a GitHub Release ended in `|| true`, so a failed upload (an expired token, a path that no
+       longer matched) left a release page promising a `LifeMentorSetup.exe` and an `.apk` that were
+       not there — with a green run. The job now checks the downloaded artifacts for the two files
+       an ordinary person downloads plus the server bundle, removes the `|| true`, and re-reads the
+       release through the API to confirm all three assets really are listed.
      * **a failed read looked exactly like an empty account**: every screen ended its loaders with
        `.catch(() => undefined)`, so a broken query — or a closed driver — left the state `null` and
        the screen either spun forever (Knowledge, Skills, every Settings tab, the whole screen) or
