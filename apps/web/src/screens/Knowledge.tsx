@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { KnowledgeMap, KnowledgeNode } from '@lifementor/core';
-import { Btn, Card, Empty, Field, I, Modal, PageHead, Progress, Select, Spinner, Tag, TextInput } from '../components/ui';
+import { Btn, Card, Empty, Field, I, LoadFailure, Modal, PageHead, Progress, Select, Spinner, Tag, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
+import { loadSafely } from '../lib/load';
 
 const STATUS_RU: Record<string, string> = {
   unknown: 'не изучено', learning: 'изучаю', practiced: 'практика', mastered: 'освоено', gap: 'пробел',
@@ -13,21 +14,25 @@ const STATUS_COLOR: Record<string, string> = {
 export function Knowledge() {
   const { app, version, mutate, toast } = useApp();
   const [map, setMap] = useState<KnowledgeMap | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
   const [selected, setSelected] = useState<KnowledgeNode | null>(null);
   const [adding, setAdding] = useState(false);
 
   useEffect(() => {
     if (!app) return;
     let stop = false;
-    app.services.knowledge.map().then((m) => { if (!stop) setMap(m); }).catch(() => undefined);
+    setLoadError(null);
+    loadSafely(app.services.knowledge.map(), { ok: setMap, fail: setLoadError, alive: () => !stop });
     return () => { stop = true; };
-  }, [app, version]);
+  }, [app, version, reloadTick]);
 
   // The layout must be computed before the early return below: a hook after a conditional return
   // changes the hook order between the loading render and the loaded one, which React answers with
   // "Rendered more hooks than during the previous render" — the screen never appeared at all.
   const layout = useMemo(() => (map ? layoutNodes(map) : null), [map]);
 
+  if (loadError) return <LoadFailure what="карту знаний" message={loadError} onRetry={() => setReloadTick((t) => t + 1)} />;
   if (!map || !layout) return <Spinner label="Строю карту знаний…" />;
 
   return (

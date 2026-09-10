@@ -28,11 +28,11 @@ that exposes it is tracked separately, because a service without a screen is not
 | 15 | Notifications | ✅ **web push + FCM done** — client budget/quiet-hours/smart reminders + local scheduling; server: VAPID Web Push (subscribe/poll/deliver queue, urgent-news push with daily cap), **FCM v1 transport** (RS256 service-account JWT, token revocation, urgent = visible OS notification, data-only otherwise), service worker, polling fallback as the guaranteed path. Activation is external: a Firebase project for `ai.lifementor.app` + a server service account (docs/11 §FCM). |
 | 16 | Sync + offline (queue, incremental push/pull, conflicts) | ✅ done end to end — client engine, server API, two-device integration test |
 | 17 | Backup + restore + export/import + account deletion | ✅ done (local images, JSON archives, rotation, purge, **cloud backup slot**: client-side AES-GCM, server stores ciphertext + sha256, `POST/GET/DELETE /v1/backup`) |
-| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 194 automated tests passing (30 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **bundle boot test (builds `dist/main.mjs` and calls the running server)** + **packaged-archive test (self-contained start on an unconfigured machine)** + **client-bundle credential guard (scans the built client for keys/secrets, with a self-test)** + **dialog contract (keyboard focus, announcement, Escape)** + **`init:env` test** + **maintenance phase gate (snapshots/reviews/backup/retention on a real clock, 10 tests)** + **real clients against the shipped server bundle (register → two-device sync → AI gateway on a keyless machine)** + **notification gate (quiet hours across a restart, per-type silence, daily budget, first-launch reconciliation)** + **UI journey tests driving the real client under jsdom**) |
+| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 200 automated tests passing (31 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **bundle boot test (builds `dist/main.mjs` and calls the running server)** + **packaged-archive test (self-contained start on an unconfigured machine)** + **client-bundle credential guard (scans the built client for keys/secrets, with a self-test)** + **dialog contract (keyboard focus, announcement, Escape)** + **`init:env` test** + **maintenance phase gate (snapshots/reviews/backup/retention on a real clock, 10 tests)** + **real clients against the shipped server bundle (register → two-device sync → AI gateway on a keyless machine)** + **notification gate (quiet hours across a restart, per-type silence, daily budget, first-launch reconciliation)** + **screen-load guard (no silent `.catch`, a failure is shown with a retry)** + **UI journey tests driving the real client under jsdom**) |
 | 19 | Packaging (Windows NSIS/MSI, Android APK, server release bundle) | 🟡 **one command away** — `npm run package:server` produces a self-contained server archive (single 2 MB `.mjs`, launcher, autostart script, README) that starts on a machine with no dependencies and writes its own stable `.env`; the Windows NSIS installer and the signed APK are built by `release.yml` (Rust/JDK) and attached to the GitHub Release by the `publish` job, with a server bundle artifact next to them — `docs/11-packaging.md` |
 | 20 | Polishing (UI density, empty states, error copy, perf, a11y, hardening) | 🟡 in progress — error copy, toast a11y, icon-button audit, empty states, performance audit, **UI test layer** and the hardening round below are done; deep profiling on a real device is left |
 
-**Test suite today:** 194 tests, 30 files — `packages/core/test` (public API, persistence + WASM
+**Test suite today:** 200 tests, 31 files — `packages/core/test` (public API, persistence + WASM
 driver durability, **Tauri and Capacitor driver contracts — the exact `sql_*` invoke shapes and
 v8 plugin API the shells implement, run against emulated Rust/Android engines**, sync/backup/
 recovery, auth, AI, onboarding), `apps/server/test` (auth API, sync API, AI gateway, news engine
@@ -142,6 +142,20 @@ wrote).
        behaviour: the quiet hours the user set survive a restart, urgent events still pass through
        them, the daily budget stops the notification past the limit, and muting one kind leaves the
        others working.
+     * **a failed read looked exactly like an empty account**: every screen ended its loaders with
+       `.catch(() => undefined)`, so a broken query — or a closed driver — left the state `null` and
+       the screen either spun forever (Knowledge, Skills, every Settings tab, the whole screen) or
+       showed an empty list indistinguishable from real, empty data. Screens now read through
+       `loadSafely`, which records the failure: the user gets the short Russian sentence, a
+       «Повторить» button and the note that nothing on disk was touched, while the internal message
+       stays in the console for support. Two places were *lying*, not merely hiding: the project form
+       showed an empty goal list (now «не удалось прочитать цели»), and the event form's overlap
+       check failed into "no overlaps" — an unknown answer now asks for the same explicit
+       confirmation a real overlap does, because the planner will refuse that slot later and the
+       user would never learn why. Deliberately non-fatal work (a chat draft, the last screen, FCM
+       registration) goes through `bestEffort`, which logs instead of vanishing.
+       `apps/web/test/load-failure.test.tsx` fails on any new silent catch in the client and pins the
+       behaviour of both helpers.
      * **the engine's diagnostics were shown raw, in English**: the strategy connectivity audit
        («Проверка связности») printed sentences like "No active 3mo direction", and the
        crash-recovery report — a card added in this same round — printed "3 orphan row(s) were
@@ -263,7 +277,7 @@ npm start                   # run the bundle
 # Secrets (JWT_SECRET, provider keys, VAPID) go in a .env file in the repo
 # root (copy .env.example) — read by the server, gitignored, never sent to clients.
 
-npm test                    # 194 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
+npm test                    # 200 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
 npm run typecheck           # tsc --noEmit over the whole monorepo
 npm run db:integrity        # server database diagnostics
 

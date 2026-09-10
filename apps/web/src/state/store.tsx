@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import type { LifeMentorApp, AuthState, SyncStatusView, Notification } from '@lifementor/core';
 import { bootstrapApp, resetAppPromise, SERVER_URL } from '../core/app';
 import { userError } from '../lib/errors';
+import { bestEffort } from '../lib/load';
 import { pollPendingNotifications } from '../push';
 
 export interface Toast { id: number; text: string; kind: 'info' | 'error' | 'ok' | 'warn' }
@@ -141,9 +142,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const g = globalThis as Record<string, unknown>;
     if (!app || g.Capacitor === undefined) return;
-    void import('../shells/fcm')
-      .then((m) => m.initFcm(app, () => void onFcmArrival()))
-      .catch(() => undefined);
+    bestEffort(import('../shells/fcm').then((m) => m.initFcm(app, () => void onFcmArrival())), 'FCM registration');
   }, [app, auth?.authenticated, onFcmArrival]);
 
   const mutate = useCallback(async <T,>(fn: () => Promise<T>, okText?: string): Promise<T | null> => {

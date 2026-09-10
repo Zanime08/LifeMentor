@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import type { Project, ProjectDetails, ProjectMilestone } from '@lifementor/core';
-import { Btn, Card, Confirm, Empty, Field, I, Modal, PageHead, Progress, Select, Spinner, Tag, TextArea, TextInput } from '../components/ui';
+import { Btn, Card, Confirm, Empty, Field, I, LoadFailure, Modal, PageHead, Progress, Select, Spinner, Tag, TextArea, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
+import { loadSafely } from '../lib/load';
 
 /** Human wording for a project the engine flagged, built from the project itself (the engine's own
  * reasons are English internal strings and are not shown to the user). */
@@ -25,6 +26,8 @@ function attentionDetail(project: Project): string {
 export function Projects() {
   const { app, version, mutate, toast, toastError } = useApp();
   const [projects, setProjects] = useState<Project[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
   const [attention, setAttention] = useState<{ project: Project; reason: string }[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
   const [details, setDetails] = useState<ProjectDetails | null>(null);
@@ -35,22 +38,24 @@ export function Projects() {
   useEffect(() => {
     if (!app) return;
     let stop = false;
-    app.services.projects.list().then((p) => { if (!stop) setProjects(p); }).catch(() => undefined);
+    setLoadError(null);
+    loadSafely(app.services.projects.list(), { ok: setProjects, fail: setLoadError, alive: () => !stop });
     // The engine has always known which projects are at risk (stalled / deadline / blocked) — it
     // just never told anyone (req. 41). Asking it costs one assessment per project.
-    app.services.projects.needsAttention().then((a) => { if (!stop) setAttention(a); }).catch(() => undefined);
+    loadSafely(app.services.projects.needsAttention(), { ok: setAttention, fail: setLoadError, alive: () => !stop });
     return () => { stop = true; };
-  }, [app, version]);
+  }, [app, version, reloadTick]);
 
   useEffect(() => {
     if (!app || !openId) return;
     let stop = false;
-    app.services.projects.details(openId).then((d) => { if (!stop) setDetails(d); }).catch(() => undefined);
+    loadSafely(app.services.projects.details(openId), { ok: setDetails, fail: setLoadError, alive: () => !stop });
     return () => { stop = true; };
   }, [app, openId, version, detailsTick]);
 
   const reloadDetails = () => setDetailsTick((t) => t + 1);
 
+  if (loadError) return <LoadFailure what="проекты" message={loadError} onRetry={() => setReloadTick((t) => t + 1)} />;
   if (!projects) return <Spinner label="Загружаю проекты…" />;
 
   return (
@@ -186,9 +191,13 @@ function ProjectCreate({ onClose }: { onClose: () => void }) {
   const [priority, setPriority] = useState<'P0' | 'P1' | 'P2' | 'P3'>('P2');
   const [milestones, setMilestones] = useState('');
   const [goals, setGoals] = useState<import('@lifementor/core').Goal[]>([]);
+  const [goalsError, setGoalsError] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { if (app) void app.services.goals.list({ status: 'active' }).then(setGoals).catch(() => undefined); }, [app]);
+  useEffect(() => {
+    if (!app) return;
+    loadSafely(app.services.goals.list({ status: 'active' }), { ok: setGoals, fail: () => setGoalsError(true) });
+  }, [app]);
 
   const create = async () => {
     if (!app || !title.trim()) return;
@@ -223,6 +232,8 @@ function ProjectCreate({ onClose }: { onClose: () => void }) {
             <option value="">— без цели —</option>
             {goals.map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
           </Select>
+          {/* An empty goal list and a failed read look identical in a <select> — say which it is. */}
+          {goalsError && <div className="xsmall muted mt-xs">Не удалось прочитать цели — проект можно создать без цели.</div>}
         </Field>
         <Field label="Дедлайн" optional>
           <TextInput type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} style={{ width: 160 }} />

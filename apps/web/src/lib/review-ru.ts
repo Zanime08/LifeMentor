@@ -12,6 +12,13 @@ import { fmtMinutes, plural } from './ru';
  * Every code the engine can emit must be handled below; `review-ru.test.ts` walks a real review and
  * fails if a code has no wording.
  */
+/**
+ * `fmtMinutes(0)` renders '—' — right for a value the user never filled in, wrong inside a sentence
+ * about time that really was (or was not) spent: «Сделано задач: 3 · — в фокусе» reads like missing
+ * data, not like a day without focus time.
+ */
+const spent = (minutes: number): string => (minutes > 0 ? fmtMinutes(minutes) : '0 мин');
+
 export function reviewItemText(item: ReviewItem): string | null {
   const p = (item.params ?? {}) as Record<string, number | string>;
   const num = (key: string): number => Number(p[key] ?? 0);
@@ -19,9 +26,9 @@ export function reviewItemText(item: ReviewItem): string | null {
   switch (item.code) {
     // ── weekly: what went well ──────────────────────────────────────────
     case 'tasks_completed':
-      return `Сделано задач: ${num('count')} · ${fmtMinutes(num('focusMinutes'))} в фокусе`;
+      return `Сделано задач: ${num('count')} · ${spent(num('focusMinutes'))} в фокусе`;
     case 'learning_time':
-      return `На обучение ушло ${fmtMinutes(num('minutes'))}`;
+      return `На обучение ушло ${spent(num('minutes'))}`;
     case 'streak':
       return `Серия ${num('days')} ${plural(num('days'), 'день', 'дня', 'дней')} подряд`;
     case 'days_active':
@@ -45,8 +52,13 @@ export function reviewItemText(item: ReviewItem): string | null {
       return `«Прокрастинация» названа причиной ${num('count')} ${plural(num('count'), 'раз', 'раза', 'раз')} — посмотрите, что общего у этих задач.`;
     case 'estimate_overrun':
       return `Фактическое время превышало оценку примерно на ${num('percent')}%.`;
-    case 'learning_behind':
-      return `Обучение получило ${fmtMinutes(num('minutes'))} из ${fmtMinutes(num('target'))} недельной цели.`;
+    case 'learning_behind': {
+      const minutes = num('minutes');
+      const target = fmtMinutes(num('target'));
+      return minutes > 0
+        ? `Обучение получило ${fmtMinutes(minutes)} из ${target} недельной цели.`
+        : `Обучение на этой неделе не получило времени: цель — ${target} в неделю.`;
+    }
     case 'consistency':
       return `Активность ${num('days')}/7 дней — стабильность сейчас ваш главный сигнал.`;
     // ── weekly: next week ───────────────────────────────────────────────

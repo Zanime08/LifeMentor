@@ -58,6 +58,18 @@ export function Empty({ icon = '◌', title, hint, action }: { icon?: string; ti
   );
 }
 
+/**
+ * A screen whose data could not be read. Every loader used to end with `.catch(() => undefined)`, so
+ * a broken read looked exactly like an empty account (or a spinner that never stopped).
+ */
+export function LoadFailure({ what, message, onRetry }: { what: string; message: string; onRetry?: () => void }) {
+  return (
+    <Empty icon={I.offline} title={`Не удалось загрузить ${what}`}
+      hint={`${message} Данные на диске не тронуты — Настройки → Диагностика проверят базу.`}
+      action={onRetry ? <Btn kind="ghost" size="sm" onClick={onRetry}>Повторить</Btn> : undefined} />
+  );
+}
+
 export function Spinner({ label }: { label?: string }) {
   return <div className="row" style={{ gap: 10, color: 'var(--ink-3)' }}><span className="spin" />{label && <span className="small">{label}</span>}</div>;
 }

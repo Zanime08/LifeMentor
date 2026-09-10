@@ -126,12 +126,14 @@ function Analysis({ analysis, onContinue }: { analysis: { gaps: number; selected
 
 /* ── Stage 1: questionnaire ─────────────────────────────────────────── */
 function Questionnaire({ block, blockIndex, totalBlocks, onNext, onBack }: { block: QuestionBlock; blockIndex: number; totalBlocks: number; onNext: () => void; onBack: () => void }) {
-  const { app, mutate } = useApp();
+  const { app, mutate, toastError } = useApp();
   const [answers, setAnswers] = useState<Record<string, unknown>>({});
 
   useEffect(() => {
     let stop = false;
-    if (app) app.services.onboarding.answers().then((a) => { if (!stop) setAnswers(a); }).catch(() => undefined);
+    // A failed read would present an empty questionnaire: the person would answer questions they
+    // already answered, and the interview would lose what it was told.
+    if (app) app.services.onboarding.answers().then((a) => { if (!stop) setAnswers(a); }).catch((e) => { if (!stop) toastError(e); });
     return () => { stop = true; };
   }, [app]);
 

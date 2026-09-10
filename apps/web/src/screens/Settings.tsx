@@ -1,14 +1,52 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { FieldDiff, LifeMentorApp, RecoveryReport, SyncConflict } from '@lifementor/core';
-import { Btn, Card, Confirm, Field, I, Modal, PageHead, Select, Spinner, Tag, TextInput } from '../components/ui';
+import type { LifeMentorApp, RecoveryReport } from '@lifementor/core';
+import { Btn, Card, Confirm, Field, I, LoadFailure, Modal, PageHead, Select, Spinner, Tag, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
+import { loadSafely } from '../lib/load';
 import { SERVER_URL_STORAGE_KEY } from '../core/app';
 import { disablePush, enablePush, getPushState, sendTestPush } from '../push';
 import { cloudBackupStatus, deleteCloudBackup, downloadCloudBackup, uploadCloudBackup, type CloudBackupStatus } from '../cloud-backup';
 import { timeAgo } from '../lib/ru';
+import { userError } from '../lib/errors';
 
 type Health = Awaited<ReturnType<LifeMentorApp['health']>>;
+
+type SettingBlock = 'planning' | 'notifications' | 'ai' | 'privacy';
+
+/**
+ * Reads one settings block for a tab. `.catch(() => undefined)` used to leave the state `null`
+ * forever — the tab then rendered its spinner until the user gave up, with no sign that anything
+ * had gone wrong. A failure is now a state the tab can show (req. 95).
+ */
+function useSettingBlock(app: LifeMentorApp | null, key: SettingBlock) {
+  const [data, setData] = useState<Record<string, unknown> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!app) return;
+    let stop = false;
+    setError(null);
+    loadSafely(app.services.settings.get(key), { ok: (p) => setData(p as never), fail: setError, alive: () => !stop });
+    return () => { stop = true; };
+  }, [app, key, tick]);
+  return { data, error, retry: () => setTick((t) => t + 1) };
+}
+
+/** The same, for a one-off read that is not a settings block (health, conflicts, backups). */
+function useScreenValue<T>(app: LifeMentorApp | null, read: (app: LifeMentorApp) => Promise<T>, deps: unknown[] = []) {
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!app) return;
+    let stop = false;
+    setError(null);
+    loadSafely(read(app), { ok: (v) => setData(v), fail: setError, alive: () => !stop });
+    return () => { stop = true; };
+  }, [app, tick, ...deps]);
+  return { data, error, retry: () => setTick((t) => t + 1), set: setData };
+}
 
 export function Settings() {
   const { app, version, mutate, toast, toastError, auth, syncStatus, refresh } = useApp();
@@ -47,17 +85,13 @@ export function Settings() {
 function SyncTab() {
   const { app, mutate, toast, toastError, auth, syncStatus, version, refresh } = useApp();
   const navigate = useNavigate();
-  const [conflicts, setConflicts] = useState<(SyncConflict & { local: Record<string, unknown>; remote: Record<string, unknown>; diff: FieldDiff[] })[]>([]);
+  const conflictsRead = useScreenValue(app, (a) => a.services.sync!.openConflicts(), [version]);
+  const conflicts = conflictsRead.data ?? [];
+  const conflictsError = conflictsRead.error;
   const [resolveFor, setResolveFor] = useState<(typeof conflicts)[number] | null>(null);
   const [busy, setBusy] = useState(false);
   const [serverDraft, setServerDraft] = useState<string>(() => (typeof localStorage !== 'undefined' ? localStorage.getItem(SERVER_URL_STORAGE_KEY) ?? '' : ''));
 
-  useEffect(() => {
-    if (!app?.services.sync) return;
-    let stop = false;
-    app.services.sync.openConflicts().then((c) => { if (!stop) setConflicts(c); }).catch(() => undefined);
-    return () => { stop = true; };
-  }, [app, version]);
 
   const syncNow = async () => {
     if (!app?.services.sync) return;
@@ -135,6 +169,13 @@ function SyncTab() {
             </div>
           </>
         )}
+        {conflictsError && (
+          // "no conflicts" and "could not read the conflicts" are opposite answers — never show the
+          // first one for the second case.
+          <div className="xsmall mt-sm" style={{ color: 'var(--danger)' }}>
+            {conflictsError} Список конфликтов мог не загрузиться. <Btn size="xs" kind="ghost" onClick={conflictsRead.retry}>Повторить</Btn>
+          </div>
+        )}
         {conflicts.length > 0 && (
           <>
             <div className="section-title">Конфликты (требуют вашего решения)</div>
@@ -198,8 +239,9 @@ function DataTab() {
   const [cloudBusy, setCloudBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const loadBackups = () => { if (app) void app.services.backup.list().then(setBackups).catch(() => undefined); };
-  useEffect(loadBackups, [app]);
+  const backupsRead = useScreenValue(app, (a) => a.services.backup.list());
+  const loadBackups = () => { setBackups(backupsRead.data ?? []); backupsRead.retry(); };
+  useEffect(() => { setBackups(backupsRead.data ?? []); }, [backupsRead.data]);
 
   // Cloud backup status (metadata only — the ciphertext never touches the UI).
   const loadCloud = useCallback(() => {
@@ -367,8 +409,12 @@ function DataTab() {
 /* ── planning ───────────────────────────────────────────────────────── */
 function PlanningTab() {
   const { app, mutate } = useApp();
+  const { data: loaded, error, retry } = useSettingBlock(app, 'planning');
+  // The read is asynchronous, but the form edits a local copy: keep it in sync with the read
+  // and let a failure through *before* the form ever renders.
   const [s, setS] = useState<Record<string, unknown> | null>(null);
-  useEffect(() => { if (app) void app.services.settings.get('planning').then((p) => setS(p as never)).catch(() => undefined); }, [app]);
+  useEffect(() => { if (loaded) setS(loaded); }, [loaded]);
+  if (error) return <LoadFailure what="настройки планирования" message={error} onRetry={retry} />;
   if (!s) return <Spinner />;
   const set = (key: string, value: unknown) => {
     setS((m) => ({ ...m!, [key]: value }));
@@ -425,16 +471,29 @@ const NOTIFICATION_TYPE_RU: Record<string, { label: string; hint: string }> = {
 
 function NotificationsTab() {
   const { app, mutate } = useApp();
+  const { data: loaded, error, retry } = useSettingBlock(app, 'notifications');
+  // The read is asynchronous, but the form edits a local copy: keep it in sync with the read
+  // and let a failure through *before* the form ever renders.
   const [s, setS] = useState<Record<string, unknown> | null>(null);
+  useEffect(() => { if (loaded) setS(loaded); }, [loaded]);
   const [byType, setByType] = useState<Record<string, { enabled: 0 | 1 }> | null>(null);
+  const [prefsError, setPrefsError] = useState<string | null>(null);
+  const [prefsTick, setPrefsTick] = useState(0);
   const loadPrefs = useCallback(async () => {
     if (!app) return;
-    setByType(await app.services.notifications.preferences() as never);
+    setPrefsError(null);
+    try {
+      setByType(await app.services.notifications.preferences() as never);
+    } catch (e) {
+      console.warn('[lifementor] screen load failed:', e instanceof Error ? e.message : e);
+      setPrefsError(userError(e));
+    }
   }, [app]);
-  useEffect(() => {
-    if (app) void app.services.settings.get('notifications').then((p) => setS(p as never)).catch(() => undefined);
-    void loadPrefs();
-  }, [app, loadPrefs]);
+  useEffect(() => { void loadPrefs(); }, [loadPrefs, prefsTick]);
+  if (error || prefsError) {
+    return <LoadFailure what="настройки уведомлений" message={(error ?? prefsError)!}
+      onRetry={() => { retry(); setPrefsTick((t) => t + 1); }} />;
+  }
   if (!s || !byType) return <Spinner />;
 
   /**
@@ -552,8 +611,12 @@ function PushCard() {
 /* ── AI ─────────────────────────────────────────────────────────────── */
 function AiTab() {
   const { app, mutate } = useApp();
+  const { data: loaded, error, retry } = useSettingBlock(app, 'ai');
+  // The read is asynchronous, but the form edits a local copy: keep it in sync with the read
+  // and let a failure through *before* the form ever renders.
   const [s, setS] = useState<Record<string, unknown> | null>(null);
-  useEffect(() => { if (app) void app.services.settings.get('ai').then((p) => setS(p as never)).catch(() => undefined); }, [app]);
+  useEffect(() => { if (loaded) setS(loaded); }, [loaded]);
+  if (error) return <LoadFailure what="настройки ИИ" message={error} onRetry={retry} />;
   if (!s) return <Spinner />;
   const set = (key: string, value: unknown) => {
     setS((m) => ({ ...m!, [key]: value }));
@@ -593,8 +656,12 @@ function AiTab() {
 /* ── privacy ────────────────────────────────────────────────────────── */
 function PrivacyTab() {
   const { app, mutate } = useApp();
+  const { data: loaded, error, retry } = useSettingBlock(app, 'privacy');
+  // The read is asynchronous, but the form edits a local copy: keep it in sync with the read
+  // and let a failure through *before* the form ever renders.
   const [s, setS] = useState<Record<string, unknown> | null>(null);
-  useEffect(() => { if (app) void app.services.settings.get('privacy').then((p) => setS(p as never)).catch(() => undefined); }, [app]);
+  useEffect(() => { if (loaded) setS(loaded); }, [loaded]);
+  if (error) return <LoadFailure what="настройки приватности" message={error} onRetry={retry} />;
   if (!s) return <Spinner />;
   const set = (key: string, value: unknown) => {
     setS((m) => ({ ...m!, [key]: value }));
@@ -724,8 +791,8 @@ function RecoveryCard() {
 
 function DiagnosticsTab() {
   const { app } = useApp();
-  const [health, setHealth] = useState<Health | null>(null);
-  useEffect(() => { if (app) void app.health().then(setHealth).catch(() => undefined); }, [app]);
+  const { data: health, error, retry, set: setHealth } = useScreenValue<Health>(app, (a) => a.health());
+  if (error) return <LoadFailure what="диагностику базы" message={error} onRetry={retry} />;
   if (!health) return <Spinner />;
   return (
     <>

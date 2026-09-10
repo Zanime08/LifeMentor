@@ -4,6 +4,7 @@ import type { LifeMentorApp } from '@lifementor/core';
 import { AppProvider, useApp } from './state/store';
 import { Btn, I, Toasts } from './components/ui';
 import { todayKey } from './lib/ru';
+import { bestEffort } from './lib/load';
 import { AuthScreen } from './screens/Auth';
 import { Onboarding } from './screens/Onboarding';
 import { Dashboard } from './screens/Dashboard';
@@ -66,7 +67,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   // synced and never audited — it is device-local state, not data.
   useEffect(() => {
     if (!app || !TITLES[location.pathname]) return;
-    void app.services.recovery.setLastRoute(location.pathname).catch(() => undefined);
+    bestEffort(app.services.recovery.setLastRoute(location.pathname), 'remember last screen');
   }, [app, location.pathname]);
 
   // Onboarding gate: until the user model is confirmed the app shows only the wizard.

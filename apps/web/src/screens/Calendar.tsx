@@ -154,6 +154,7 @@ function EventForm({ day, event, onClose, onSaved }: { day: string; event: Calen
   const [notes, setNotes] = useState(event?.notes ?? '');
   const [busy, setBusy] = useState(false);
   const [conflicts, setConflicts] = useState<CalendarEvent[]>([]);
+  const [checkFailed, setCheckFailed] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
 
   const startMin = allDay ? 0 : toMin(start);
@@ -162,12 +163,17 @@ function EventForm({ day, event, onClose, onSaved }: { day: string; event: Calen
   // Live overlap warning (req. 31, 82, 83). The planner refuses to place work inside a fixed slot,
   // so an unnoticed double booking used to surface later as "no free time today" with no hint why.
   useEffect(() => {
-    if (!app || !date || (!allDay && endMin <= startMin)) { setConflicts([]); return; }
+    if (!app || !date || (!allDay && endMin <= startMin)) { setConflicts([]); setCheckFailed(false); return; }
     let stop = false;
     const timer = window.setTimeout(() => {
       app.services.calendar.findConflicts(date, startMin, endMin, event?.id)
-        .then((found) => { if (!stop) setConflicts(found); })
-        .catch(() => { if (!stop) setConflicts([]); });
+        .then((found) => { if (!stop) { setConflicts(found); setCheckFailed(false); } })
+        // A failed check is *not* "no overlap": an unknown answer must not save in silence, because
+        // the planner will later refuse this slot and the user would never learn why.
+        .catch((error: unknown) => {
+          console.warn('[lifementor] screen load failed:', error instanceof Error ? error.message : error);
+          if (!stop) { setConflicts([]); setCheckFailed(true); }
+        });
     }, 250);
     setAcknowledged(false);
     return () => { stop = true; window.clearTimeout(timer); };
@@ -177,7 +183,7 @@ function EventForm({ day, event, onClose, onSaved }: { day: string; event: Calen
     if (!app || !title.trim() || busy) return;
     // Never write an overlap silently: the first click shows what it collides with, the second —
     // explicit — one saves it. Overlapping immovable events are a legitimate real-life input.
-    if (conflicts.length && !acknowledged) { setAcknowledged(true); return; }
+    if ((conflicts.length || checkFailed) && !acknowledged) { setAcknowledged(true); return; }
     setBusy(true);
     try {
       const payload = {
@@ -200,11 +206,21 @@ function EventForm({ day, event, onClose, onSaved }: { day: string; event: Calen
       <>
         <Btn onClick={onClose}>Отмена</Btn>
         <Btn kind="primary" onClick={() => void save()} disabled={busy || !title.trim()}>
-          {conflicts.length && !acknowledged ? 'Сохранить' : acknowledged && conflicts.length ? 'Сохранить всё равно' : 'Сохранить'}
+          {(conflicts.length || checkFailed) && !acknowledged ? 'Сохранить'
+            : acknowledged && (conflicts.length || checkFailed) ? 'Сохранить всё равно' : 'Сохранить'}
         </Btn>
       </>
     }>
       <Field label="Название"><TextInput value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Экзамен, встреча, дорога…" autoFocus /></Field>
+      {checkFailed && (
+        <div className="proactive" style={{ background: 'var(--gold-soft)', borderColor: '#e4d3a1' }}>
+          <b>Не удалось проверить пересечения.</b>
+          <div className="xsmall muted mt-sm">
+            Возможно, это время уже занято — проверьте вручную. Повторный клик «Сохранить всё равно»
+            запишет событие как есть.
+          </div>
+        </div>
+      )}
       {conflicts.length > 0 && (
         <div className="proactive" style={{ background: 'var(--gold-soft)', borderColor: '#e4d3a1' }}>
           <b>Время пересекается с {conflicts.length > 1 ? 'событиями' : 'событием'}:</b>

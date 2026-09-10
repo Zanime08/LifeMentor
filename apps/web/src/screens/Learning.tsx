@@ -1,12 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import type { LearningPath, LearningReview, PathView, Skill } from '@lifementor/core';
-import { Btn, Card, Empty, Field, I, Modal, PageHead, Progress, Select, Spinner, Stars, Tag, TextArea, TextInput } from '../components/ui';
+import { Btn, Card, Empty, Field, I, LoadFailure, Modal, PageHead, Progress, Select, Spinner, Stars, Tag, TextArea, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
+import { loadSafely } from '../lib/load';
 import { fmtMinutes, plural, timeAgo } from '../lib/ru';
 
 export function Learning() {
   const { app, version, mutate, toast, toastError } = useApp();
   const [paths, setPaths] = useState<LearningPath[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
   const [openPath, setOpenPath] = useState<PathView | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [reviews, setReviews] = useState<(LearningReview & { topic_title: string; path_title: string })[]>([]);
@@ -14,12 +17,10 @@ export function Learning() {
   useEffect(() => {
     if (!app) return;
     let stop = false;
-    (async () => {
-      try {
-        const [p, r] = await Promise.all([app.services.learning.paths(), app.services.learning.dueReviews(30)]);
-        if (!stop) { setPaths(p); setReviews(r); }
-      } catch (e) { console.error(e); }
-    })();
+    setLoadError(null);
+    loadSafely(Promise.all([app.services.learning.paths(), app.services.learning.dueReviews(30)]), {
+      ok: ([p, r]) => { setPaths(p); setReviews(r); }, fail: setLoadError, alive: () => !stop,
+    });
     return () => { stop = true; };
   }, [app, version]);
 
@@ -31,7 +32,7 @@ export function Learning() {
 
   if (!paths) return <Spinner label="Загружаю обучение…" />;
 
-  const refreshPaths = () => { if (app) void app.services.learning.paths().then(setPaths).catch(() => undefined); };
+  const refreshPaths = () => { if (app) void app.services.learning.paths().then(setPaths).catch((e) => toastError(e)); };
 
   return (
     <div>
@@ -67,7 +68,7 @@ export function Learning() {
                 <div className="li-title" style={{ fontSize: 13 }}>{r.prompt}</div>
                 <div className="li-sub">{r.path_title} · {r.topic_title}</div>
               </div>
-              <ReviewGrade reviewId={r.id} onDone={() => { refreshPaths(); if (app) void app.services.learning.dueReviews(30).then(setReviews).catch(() => undefined); }} />
+              <ReviewGrade reviewId={r.id} onDone={() => { refreshPaths(); if (app) void app.services.learning.dueReviews(30).then(setReviews).catch((e) => toastError(e)); }} />
             </div>
           ))}
         </Card>
@@ -179,7 +180,7 @@ function PathCreate({ onClose, onCreated }: { onClose: () => void; onCreated: (i
   const [skills, setSkills] = useState<Skill[]>([]);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { if (app) void app.services.skills.list().then(setSkills).catch(() => undefined); }, [app]);
+  useEffect(() => { if (app) void app.services.skills.list().then(setSkills).catch((e) => toastError(e)); }, [app]);
 
   const create = async () => {
     if (!app || !title.trim()) return;

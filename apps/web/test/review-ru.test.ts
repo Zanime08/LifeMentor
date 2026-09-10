@@ -49,6 +49,18 @@ describe('review wording', () => {
     expect(reviewItemText({ code: 'strategy_suggestion', params: { maxPriorities: 3 } })).toContain('не больше 3 активных приоритетов');
   });
 
+  it('never prints a dash where the engine put real time on the clock', () => {
+    // `fmtMinutes(0)` renders '—'. Inside a sentence about time that was actually (not) spent that
+    // reads like a missing value — the weekly review said «Обучение получило — из 8 ч 24 мин».
+    expect(reviewItemText({ code: 'tasks_completed', params: { count: 3, focusMinutes: 0 } }))
+      .toBe('Сделано задач: 3 · 0 мин в фокусе');
+    expect(reviewItemText({ code: 'learning_time', params: { minutes: 0 } })).toBe('На обучение ушло 0 мин');
+    expect(reviewItemText({ code: 'learning_behind', params: { minutes: 0, target: 504 } }))
+      .toBe('Обучение на этой неделе не получило времени: цель — 8 ч 24 мин в неделю.');
+    expect(reviewItemText({ code: 'learning_behind', params: { minutes: 60, target: 504 } }))
+      .toBe('Обучение получило 1 ч из 8 ч 24 мин недельной цели.');
+  });
+
   it('skips a code it does not know instead of printing machine text', () => {
     expect(reviewItemText({ code: 'some_future_idea', params: { x: 1 } })).toBeNull();
   });

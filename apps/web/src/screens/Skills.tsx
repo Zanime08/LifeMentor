@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import type { Skill, SkillView } from '@lifementor/core';
-import { Btn, Card, Confirm, Empty, Field, I, Modal, PageHead, Progress, Select, Spinner, Tag, TextArea, TextInput } from '../components/ui';
+import { Btn, Card, Confirm, Empty, Field, I, LoadFailure, Modal, PageHead, Progress, Select, Spinner, Tag, TextArea, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
+import { loadSafely } from '../lib/load';
 import { timeAgo } from '../lib/ru';
 
 const ASSESS_KIND_RU: Record<string, string> = {
@@ -11,6 +12,8 @@ const ASSESS_KIND_RU: Record<string, string> = {
 export function Skills() {
   const { app, version, mutate, toast } = useApp();
   const [skills, setSkills] = useState<Skill[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
   const [openId, setOpenId] = useState<string | null>(null);
   const [view, setView] = useState<SkillView | null>(null);
   const [viewTick, setViewTick] = useState(0);
@@ -20,19 +23,21 @@ export function Skills() {
   useEffect(() => {
     if (!app) return;
     let stop = false;
-    app.services.skills.list().then((s) => { if (!stop) setSkills(s); }).catch(() => undefined);
+    setLoadError(null);
+    loadSafely(app.services.skills.list(), { ok: setSkills, fail: setLoadError, alive: () => !stop });
     return () => { stop = true; };
-  }, [app, version]);
+  }, [app, version, reloadTick]);
 
   useEffect(() => {
     if (!app || !openId) return;
     let stop = false;
-    app.services.skills.view(openId).then((v) => { if (!stop) setView(v); }).catch(() => undefined);
+    loadSafely(app.services.skills.view(openId), { ok: setView, fail: setLoadError, alive: () => !stop });
     return () => { stop = true; };
   }, [app, openId, version, viewTick]);
 
   const reloadView = () => setViewTick((t) => t + 1);
 
+  if (loadError) return <LoadFailure what="навыки" message={loadError} onRetry={() => setReloadTick((t) => t + 1)} />;
   if (!skills) return <Spinner label="Загружаю навыки…" />;
   const due = skills.filter((s) => s.next_assessment_at && new Date(s.next_assessment_at).getTime() < Date.now());
 

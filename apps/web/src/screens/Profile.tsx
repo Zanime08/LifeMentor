@@ -15,6 +15,7 @@ export function Profile() {
   const [deleting, setDeleting] = useState<Memory | null>(null);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<ScoredMemory[] | null>(null);
+  const [searchFailed, setSearchFailed] = useState(false);
 
   useEffect(() => {
     if (!app) return;
@@ -38,12 +39,16 @@ export function Profile() {
   useEffect(() => {
     if (!app) return;
     const text = query.trim();
-    if (text.length < 2) { setResults(null); return; }
+    if (text.length < 2) { setResults(null); setSearchFailed(false); return; }
     let stop = false;
     const timer = window.setTimeout(() => {
       app.services.memory.search(text, { limit: 10, includeUnconfirmed: true })
-        .then((found) => { if (!stop) setResults(found); })
-        .catch(() => { if (!stop) setResults([]); });
+        .then((found) => { if (!stop) { setResults(found); setSearchFailed(false); } })
+        // "Ничего не нашлось" is a claim about the user's memory — a failed query must not make it.
+        .catch((error: unknown) => {
+          console.warn('[lifementor] screen load failed:', error instanceof Error ? error.message : error);
+          if (!stop) { setResults([]); setSearchFailed(true); }
+        });
     }, 250);
     return () => { stop = true; window.clearTimeout(timer); };
   }, [app, query]);
@@ -109,7 +114,11 @@ export function Profile() {
               />
               {query.length > 0 && <Btn size="xs" onClick={() => setQuery('')}>Сбросить</Btn>}
             </div>
-            {hits ? (
+            {searchFailed ? (
+              <div className="small" style={{ color: 'var(--danger)' }}>
+                Поиск по памяти не сработал — это не значит, что ничего нет. Измените запрос, чтобы повторить.
+              </div>
+            ) : hits ? (
               hits.length === 0 ? (
                 <div className="small muted">Ничего не нашлось. Память ищет и по словам, и по смыслу — попробуйте другой запрос.</div>
               ) : (

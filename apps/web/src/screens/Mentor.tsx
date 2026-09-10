@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { Message, TurnResult } from '@lifementor/core';
 import { Btn, I, Spinner, TextArea, Tag } from '../components/ui';
 import { useApp } from '../state/store';
+import { bestEffort } from '../lib/load';
 
 interface ChatMsg {
   id: string;
@@ -86,7 +87,7 @@ export function Mentor() {
         setInput(text);
         setDraftRestored(true);
       }
-    }).catch(() => undefined);
+    }).catch((error: unknown) => console.warn('[lifementor] chat draft failed (non-fatal):', error instanceof Error ? error.message : error));
   }, [app]);
 
   useEffect(() => {
@@ -95,7 +96,7 @@ export function Mentor() {
     if (!text) return;
     const timer = window.setTimeout(() => {
       draftSaved.current = true;
-      void app.services.recovery.saveDraft('mentor', { text }).catch(() => undefined);
+      bestEffort(app.services.recovery.saveDraft('mentor', { text }), 'chat draft save');
     }, 600);
     return () => window.clearTimeout(timer);
   }, [app, input]);
@@ -116,7 +117,7 @@ export function Mentor() {
     setDraftRestored(false);
     if (draftSaved.current) {
       draftSaved.current = false;
-      void app.services.recovery.clearDraft('mentor').catch(() => undefined);
+      bestEffort(app.services.recovery.clearDraft('mentor'), 'chat draft clear');
     }
     const userMsg: ChatMsg = { id: `u${Date.now()}`, role: 'user', text: content };
     setMessages((m) => [...m, userMsg]);
@@ -203,7 +204,7 @@ export function Mentor() {
             draftSaved.current = false;
             setDraftRestored(false);
             setInput('');
-            void app?.services.recovery.clearDraft('mentor').catch(() => undefined);
+            if (app) bestEffort(app.services.recovery.clearDraft('mentor'), 'chat draft clear');
             toast('Черновик удалён');
           }}>Очистить</Btn>
         </div>
