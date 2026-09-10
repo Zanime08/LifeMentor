@@ -520,6 +520,45 @@ describe('first run in the browser client (dom, real engine)', () => {
     expect(await screen.findByText(/За 30 дней перенесено \d+ (задача|задачи|задач) · причины: Не хватает времени — 1/, {}, { timeout: 20_000 })).toBeTruthy();
   }, 180_000);
 
+  it('lets the user mute one kind of notification without muting the rest (req. 85)', async () => {
+    window.location.hash = '#/settings';
+    render(<App />);
+    await waitFor(() => expect(openApp()).not.toBeNull(), { timeout: 30_000 });
+
+    // Settings → Уведомления: the engine has always had per-type preferences, but nothing in the
+    // interface (or anywhere else) ever wrote them.
+    // The settings tab (class `q-option`), not the shell's notification bell — both are named
+    // "Уведомления" and the bell would navigate away from this screen.
+    const tabs = await screen.findAllByRole('button', { name: 'Уведомления' }, { timeout: 30_000 });
+    const tab = tabs.find((b) => b.className.includes('q-option'));
+    expect(tab, 'the "Уведомления" tab').toBeTruthy();
+    await user.click(tab!);
+    const toggle = await screen.findByRole('button', { name: /Важные новости/ }, { timeout: 20_000 });
+    expect(toggle.textContent).toContain('✓');
+    await user.click(toggle);
+
+    await waitFor(async () => {
+      const prefs = await openApp()!.services.notifications.preferences();
+      expect(prefs.important_news?.enabled).toBe(0);
+    }, { timeout: 20_000 });
+    expect(await screen.findByRole('button', { name: /✕ Важные новости/ }, { timeout: 20_000 })).toBeTruthy();
+
+    // A fresh profile has no per-type rows at all: every kind is on by default and the override is
+    // written only when the user asks for it (the row that used to be created at first launch froze
+    // quiet hours and the daily budget).
+    // …and the engine refuses to deliver that kind while the others keep working.
+    const muted = await openApp()!.services.notifications.create({
+      type: 'important_news', title: 'Новость', body: 'Важное событие с объяснением, почему оно важно',
+      importance: 0.6, dedupe_key: 'ui-news-1',
+    });
+    expect(muted).toMatchObject({ delivered: false, reason: 'type_disabled' });
+    const allowed = await openApp()!.services.notifications.create({
+      type: 'task_reminder', title: 'Задача', body: 'Через 10 минут: дописать функцию авторизации',
+      importance: 0.5, dedupe_key: 'ui-task-1', force: true,
+    });
+    expect(allowed.delivered).toBe(true);
+  }, 120_000);
+
   it('returns to the last screen and keeps an unsent message (req. 13)', async () => {
     window.location.hash = '#/mentor';
     render(<App />);

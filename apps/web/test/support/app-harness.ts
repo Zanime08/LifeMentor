@@ -58,6 +58,10 @@ function options(): LifeMentorOptions {
     sync: { serverUrl: SERVER_URL, autoStart: true, intervalMs: 3_600_000 },
     auth: { serverUrl: SERVER_URL },
     backup: { onFirstLaunch: true, storage: new MemoryBackupStorage() },
+    // The UI tests are about screens, not about time-driven maintenance: without this the first
+    // launch kicks off a background pass (snapshots, review of the ended period, retention) whose
+    // timers run while tests navigate and would make failures depend on the wall clock.
+    maintenance: { enabled: false },
   };
 }
 

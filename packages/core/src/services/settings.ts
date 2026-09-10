@@ -100,6 +100,11 @@ export const FlagSettings = z.object({
    * state, never synced.
    */
   language_initialized: z.boolean().default(false),
+  /**
+   * The per-type notification rows written by an earlier version were removed (req. 85): they froze
+   * the first-launch quiet hours and budget and shadowed every later change in Settings.
+   */
+  notification_preferences_reconciled: z.boolean().default(false),
 });
 
 export const SETTINGS_GROUPS = {

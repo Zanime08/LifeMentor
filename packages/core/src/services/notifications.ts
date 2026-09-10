@@ -56,6 +56,9 @@ export class NotificationService {
     const global = await this.settings.get('notifications');
 
     if (!global.enabled) return { delivered: false, reason: 'disabled' };
+    // A row for a concrete type means the user customized that type; without one, the global settings
+    // are the source of truth. Quiet hours and the daily budget used to come from rows created on the
+    // first launch, which froze those values and silently ignored every later change in Settings.
     const typePref = prefs[parsed.type] ?? prefs['*'];
     if (typePref && typePref.enabled === 0) return { delivered: false, reason: 'type_disabled' };
 
@@ -253,6 +256,10 @@ export class NotificationService {
     return out;
   }
 
+  /**
+   * Write a per-type (or global `'*'`) preference. The row is the *override*: values left out keep
+   * falling back to the settings the user edits in «Настройки → Уведомления».
+   */
   async setPreference(type: NotificationType | '*', patch: { enabled?: boolean; channels?: string[]; quiet_start?: string | null; quiet_end?: string | null; daily_budget?: number }, ctx: WriteContext = USER_WRITE): Promise<void> {
     const record: Record<string, unknown> = {};
     if (patch.enabled !== undefined) record.enabled = patch.enabled ? 1 : 0;
@@ -272,22 +279,32 @@ export class NotificationService {
     if (type === '*' && patch.daily_budget !== undefined) await this.settings.set('notifications', { daily_budget: patch.daily_budget }, ctx);
   }
 
-  /** Initialise per-type rows from the defaults so the UI has something to toggle. */
+  /**
+   * Bring the per-type preference rows into a sane state (called on every launch).
+   *
+   * It used to *create* a row per notification type, copying the global settings of the moment. Those
+   * rows then shadowed the globals for the rest of the installation's life: a user who moved quiet
+   * hours to 01:00–02:00 in Settings still had every notification pushed out of 22:30–07:30, because
+   * that is what the first launch had written. Nothing has ever called `setPreference` (the interface
+   * has no per-type controls), so those rows only carried defaults — they are removed once, and from
+   * then on a row means what the table comment says it means: "this type is customized".
+   */
   async ensureDefaults(ctx: WriteContext = { actor: 'system' }): Promise<void> {
-    const existing = await this.repos.notificationPreferences.count({});
-    if (existing > 0) return;
-    const global = await this.settings.get('notifications');
-    await this.repos.notificationPreferences.insert({
-      type: '*', enabled: 1, channels: JSON.stringify(global.channels), quiet_start: global.quiet_start,
-      quiet_end: global.quiet_end, daily_budget: global.daily_budget,
-    } as never, ctx);
-    for (const type of NOTIFICATION_TYPES) {
-      const importanceDefault = type === 'important_news' || type === 'project_deadline' ? 1 : 1;
-      await this.repos.notificationPreferences.insert({
-        type, enabled: importanceDefault, channels: JSON.stringify(global.channels), quiet_start: global.quiet_start,
-        quiet_end: global.quiet_end, daily_budget: global.daily_budget,
-      } as never, ctx);
+    const flags = await this.settings.get('flags');
+    if (flags.notification_preferences_reconciled) return;
+    const existing = await this.repos.notificationPreferences.find({}, { limit: 50 });
+    for (const row of existing) {
+      await this.repos.notificationPreferences.softDelete(row.type, { ...ctx, reason: 'per-type defaults removed: the global settings are the source of truth' });
     }
+    // The flag is per device bookkeeping: syncing it would make each launch look like a user edit to
+    // the other devices (and a same-key settings row from two devices is a needless conflict).
+    await this.settings.set('flags', { notification_preferences_reconciled: true }, { ...ctx, sync: false });
+    if (existing.length) this.log.info('removed per-type notification defaults frozen at first launch', { rows: existing.length });
+  }
+
+  /** Silencing one kind of notification without touching the others. */
+  async setTypeEnabled(type: NotificationType, enabled: boolean, ctx: WriteContext = USER_WRITE): Promise<void> {
+    await this.setPreference(type, { enabled }, ctx);
   }
 
   isQuietAt(at: Date, quiet: { start: number; end: number }): boolean {

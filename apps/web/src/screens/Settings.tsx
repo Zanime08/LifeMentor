@@ -410,11 +410,41 @@ function PlanningTab() {
 }
 
 /* ── notifications ──────────────────────────────────────────────────── */
+/** What each kind of notification is, in the user's words. */
+const NOTIFICATION_TYPE_RU: Record<string, { label: string; hint: string }> = {
+  daily_plan: { label: 'План дня', hint: 'утром: что сегодня важно' },
+  schedule_start: { label: 'Начало события', hint: 'экзамен, встреча, дорога' },
+  task_reminder: { label: 'Напоминание о задаче', hint: 'через 10 минут — конкретная задача' },
+  learning_review: { label: 'Повторение по обучению', hint: 'когда подошёл срок повторения' },
+  important_news: { label: 'Важные новости', hint: 'только срочное, с объяснением' },
+  goal_review: { label: 'Разбор целей', hint: 'цель давно без движения' },
+  project_deadline: { label: 'Дедлайн проекта', hint: 'срок близко, прогресс отстаёт' },
+  mentor_message: { label: 'Сообщение наставника', hint: 'когда есть что сказать по делу' },
+  daily_digest: { label: 'Дайджест дня', hint: 'сводка вечером или утром' },
+};
+
 function NotificationsTab() {
   const { app, mutate } = useApp();
   const [s, setS] = useState<Record<string, unknown> | null>(null);
-  useEffect(() => { if (app) void app.services.settings.get('notifications').then((p) => setS(p as never)).catch(() => undefined); }, [app]);
-  if (!s) return <Spinner />;
+  const [byType, setByType] = useState<Record<string, { enabled: 0 | 1 }> | null>(null);
+  const loadPrefs = useCallback(async () => {
+    if (!app) return;
+    setByType(await app.services.notifications.preferences() as never);
+  }, [app]);
+  useEffect(() => {
+    if (app) void app.services.settings.get('notifications').then((p) => setS(p as never)).catch(() => undefined);
+    void loadPrefs();
+  }, [app, loadPrefs]);
+  if (!s || !byType) return <Spinner />;
+
+  /**
+   * A kind is on unless the user turned it off. The row written here is an *override*: quiet hours
+   * and the daily budget keep coming from the fields above (req. 85, 86).
+   */
+  const toggleType = (type: string, enabled: boolean) => {
+    setByType((m) => ({ ...m!, [type]: { enabled: enabled ? 1 : 0 } }));
+    void mutate(() => app!.services.notifications.setTypeEnabled(type as never, enabled), enabled ? 'Этот вид уведомлений включён' : 'Этот вид уведомлений выключен');
+  };
   const set = (key: string, value: unknown) => {
     setS((m) => ({ ...m!, [key]: value }));
     void mutate(() => app!.services.settings.set('notifications', { [key]: value } as never));
@@ -432,6 +462,24 @@ function NotificationsTab() {
         <Field label="до"><TextInput type="time" value={String(s.quiet_end ?? '07:30')} onChange={(e) => set('quiet_end', e.target.value)} style={{ width: 110 }} /></Field>
         <Field label="Дневной бюджет"><TextInput type="number" min={0} max={30} value={String(s.daily_budget)} onChange={(e) => set('daily_budget', Number(e.target.value) || 6)} style={{ width: 110 }} /></Field>
       </div>
+      <div className="section-title">Какие уведомления присылать</div>
+      <div className="row wrap" style={{ gap: 6, marginBottom: 8 }}>
+        {Object.entries(NOTIFICATION_TYPE_RU).map(([type, meta]) => {
+          const on = byType[type]?.enabled !== 0;
+          return (
+            <button key={type} type="button" className={`q-option ${on ? 'sel' : ''}`}
+              style={{ margin: 0, padding: '7px 12px', fontSize: 12.5 }}
+              title={meta.hint}
+              onClick={() => toggleType(type, !on)}>
+              {on ? '✓ ' : '✕ '}{meta.label}
+            </button>
+          );
+        })}
+      </div>
+      <p className="xsmall muted">
+        Выключенный вид не приходит вообще — остальные работают как обычно. Тихие часы и дневной
+        бюджет выше действуют для всех видов; срочное (экзамен, дедлайн) проходит даже ночью.
+      </p>
       <PushCard />
       <p className="xsmall muted">Каждое уведомление проходит фильтр: «это действительно нужно знать или сделать сейчас?»</p>
     </Card>
