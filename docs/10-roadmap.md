@@ -17,7 +17,7 @@ that exposes it is tracked separately, because a service without a screen is not
 | 4 | Database: schema, migrations, drivers, repositories, crash-safe persistence | ✅ done (26 tables at this phase; later phases added their own — the client schema is 50 tables today, the server store 12, node + wasm drivers, WAL, transactional writes) |
 | 5 | Authentication: local session + server auth (scrypt, JWT, refresh rotation, devices) | ✅ done (`apps/server` + `AuthService`, 19 tests) |
 | 6 | Windows + Android shell (Tauri `src-tauri`, Capacitor project, SQL adapters) | ✅ **projects ready** — `apps/desktop/src-tauri` (rusqlite, full `sql_*` invoke contract, NSIS bundle, capabilities, icons) + `apps/mobile` (Capacitor 8, `android/` Gradle project, notification permissions, icons) + shell platform adapters (store/preferences, native-scheduling notifications, dialog/fs, network). Both driver contracts pinned by CI tests (Rust/Android emulators). Binary builds need Rust/JDK — one command on a release machine / tag build (`docs/11-packaging.md`). |
-| 7 | Onboarding: questionnaire + adaptive interview + user-model builder | ✅ done — service (10 tests) + two-stage web wizard (questionnaire → adaptive interview → profile review → confirm) |
+| 7 | Onboarding: questionnaire + adaptive interview + user-model builder | ✅ done — service + two-stage web wizard (questionnaire → adaptive interview → profile review → confirm); the summary, the model labels and the goal drafts are worded in the user's language |
 | 8 | Profile + long-term memory + privacy controls | ✅ done — service + Memory Viewer UI ("What the AI knows about me": edit/delete/confirm) |
 | 9 | Goals + tasks + calendar + projects | ✅ done — services + Goals/Calendar/Projects screens. The strategic layer (horizons, options, change history) got its own screen in the phase-20 hardening round |
 | 10 | Daily planner + adaptive rescheduling + strict mode + free time | ✅ done — service + Today screen (day plan, energy, strict-mode reasons) |
@@ -28,11 +28,11 @@ that exposes it is tracked separately, because a service without a screen is not
 | 15 | Notifications | ✅ **web push + FCM done** — client budget/quiet-hours/smart reminders + local scheduling; server: VAPID Web Push (subscribe/poll/deliver queue, urgent-news push with daily cap), **FCM v1 transport** (RS256 service-account JWT, token revocation, urgent = visible OS notification, data-only otherwise), service worker, polling fallback as the guaranteed path. Activation is external: a Firebase project for `ai.lifementor.app` + a server service account (docs/11 §FCM). |
 | 16 | Sync + offline (queue, incremental push/pull, conflicts) | ✅ done end to end — client engine, server API, two-device integration test |
 | 17 | Backup + restore + export/import + account deletion | ✅ done (local images, JSON archives, rotation, purge, **cloud backup slot**: client-side AES-GCM, server stores ciphertext + sha256, `POST/GET/DELETE /v1/backup`) |
-| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 171 automated tests passing (26 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **bundle boot test (builds `dist/main.mjs` and calls the running server)** + **packaged-archive test (self-contained start on an unconfigured machine)** + **client-bundle credential guard (scans the built client for keys/secrets, with a self-test)** + **dialog contract (keyboard focus, announcement, Escape)** + **`init:env` test** + **maintenance phase gate (snapshots/reviews/backup/retention on a real clock, 10 tests)** + **UI journey tests driving the real client under jsdom**) |
+| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 184 automated tests passing (28 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **bundle boot test (builds `dist/main.mjs` and calls the running server)** + **packaged-archive test (self-contained start on an unconfigured machine)** + **client-bundle credential guard (scans the built client for keys/secrets, with a self-test)** + **dialog contract (keyboard focus, announcement, Escape)** + **`init:env` test** + **maintenance phase gate (snapshots/reviews/backup/retention on a real clock, 10 tests)** + **UI journey tests driving the real client under jsdom**) |
 | 19 | Packaging (Windows NSIS/MSI, Android APK, server release bundle) | 🟡 **one command away** — `npm run package:server` produces a self-contained server archive (single 2 MB `.mjs`, launcher, autostart script, README) that starts on a machine with no dependencies and writes its own stable `.env`; the Windows NSIS installer and the signed APK are built by `release.yml` (Rust/JDK) and attached to the GitHub Release by the `publish` job, with a server bundle artifact next to them — `docs/11-packaging.md` |
 | 20 | Polishing (UI density, empty states, error copy, perf, a11y, hardening) | 🟡 in progress — error copy, toast a11y, icon-button audit, empty states, performance audit, **UI test layer** and the hardening round below are done; deep profiling on a real device is left |
 
-**Test suite today:** 171 tests, 26 files — `packages/core/test` (public API, persistence + WASM
+**Test suite today:** 184 tests, 28 files — `packages/core/test` (public API, persistence + WASM
 driver durability, **Tauri and Capacitor driver contracts — the exact `sql_*` invoke shapes and
 v8 plugin API the shells implement, run against emulated Rust/Android engines**, sync/backup/
 recovery, auth, AI, onboarding), `apps/server/test` (auth API, sync API, AI gateway, news engine
@@ -117,6 +117,17 @@ event that the planner never schedules over, and a restart that keeps every conf
        `last_backup_at`, which nothing wrote), so the daily backup could pile up; a brand-new
        install also stored an image of an empty database. The timestamp is now written with the
        backup, and a pass with nothing to protect stores nothing.
+     * **the app spoke English at the moments that matter most**: reviews were rendered as stored
+       JSON (`["2 tasks postponed."]`), the onboarding confirmation step («вот как я вас понял»)
+       showed the engine's English summary — or worse, the offline engine's *day* template, "Today: 0
+       tasks done, 0m focus…", because `summariseModel` accepted any provider answer — and the goals
+       the user confirmed were created titled "Learn X to a usable level". The engine now stores every
+       review sentence as a code plus the numbers behind it and the interface words them
+       (`lib/review-ru.ts`); onboarding composes its summary and its goal drafts in the language the
+       client configured; `summariseModel` refuses the offline template the way the review narratives
+       already did. The client decides the language once, on the first launch, from the device
+       (Settings → «Язык ИИ» still changes it). Two drift tests read the engine's own source and fail
+       if a review code or a model item ever lacks a Russian wording.
      * **the Knowledge screen never rendered at all**: a `useMemo` sat *after* the `if (!map) return
        <Spinner/>` early return, so the loading render and the loaded render had different hook
        counts — React answered with "Rendered more hooks than during the previous render" and the
@@ -221,7 +232,7 @@ npm start                   # run the bundle
 # Secrets (JWT_SECRET, provider keys, VAPID) go in a .env file in the repo
 # root (copy .env.example) — read by the server, gitignored, never sent to clients.
 
-npm test                    # 171 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
+npm test                    # 184 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
 npm run typecheck           # tsc --noEmit over the whole monorepo
 npm run db:integrity        # server database diagnostics
 

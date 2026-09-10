@@ -1,4 +1,5 @@
 /** Russian localization for the onboarding questionnaire (keys match core's question ids). */
+import { QUESTIONNAIRE } from '@lifementor/core';
 
 export const BLOCK_RU: Record<string, { title: string; subtitle: string }> = {
   situation: { title: 'Ваша ситуация', subtitle: 'Чтобы план соответствовал реальной жизни, а не воображаемой.' },
@@ -51,7 +52,7 @@ export const OPT_RU: Record<string, string> = {
   under_18: 'Младше 18', '18_24': '18–24', '25_34': '25–34', '35_44': '35–44', '45_54': '45–54', '55_plus': '55+',
   prefer_not_to_say: 'Лучше не говорить',
   school: 'Школа', secondary: 'Среднее', vocational: 'Колледж / техникум', bachelor: 'Бакалавриат', master: 'Магистратура', phd: 'Доктор', self_taught: 'В основном самоучка', other: 'Другое',
-  study: 'Учусь', work_full_time: 'Работаю полностью', work_part_time: 'Работаю не полностью', freelance: 'Фриланс', job_search: 'Ищу работу', caregiving: 'Ухаживаю за семьёй', military: 'Армейская служба',
+  study: 'Учусь', work_full_time: 'Работаю полностью', work_part_time: 'Работаю неполный день', freelance: 'Фриланс', job_search: 'Ищу работу', caregiving: 'Ухаживаю за семьёй', military: 'Армейская служба',
   alone: 'Один(а)', partner: 'С партнёром', children: 'С детьми', parents: 'С родителями / семьёй', shared: 'Общая квартира',
   morning: 'Утро', afternoon: 'День', evening: 'Вечер', night: 'Поздно ночью', variable: 'Меняется',
   '1mo': 'В течение месяца', '3mo': 'В течение 3 месяцев', '1y': 'В течение года', '3y': 'Через 2–5 лет', unclear: 'Пока неясно',
@@ -88,3 +89,104 @@ export const SECTION_RU: Record<string, string> = {
   MOTIVATION_FACTORS: 'Мотивация', DISTRACTIONS: 'Отвлечения', LEARNING_PREFERENCES: 'Стиль обучения',
   CAREER_DIRECTION: 'Карьерное направление', FINANCIAL_DIRECTION: 'Финансовое направление', OTHER: 'Прочее',
 };
+
+/**
+ * Подписи пунктов модели («Вот как я вас понял»). Движок строит их по-английски — это внутренние
+ * строки, которые читают AI-контекст и экспорт; человеку их показывает интерфейс, на его языке.
+ * Ключ — `key` пункта модели (он уникален), поэтому английская подпись движка никогда не попадает
+ * на экран. `modelLabelRu` вызывается для каждого пункта, а тест `model-labels.test.ts` сверяет
+ * карту со списком ключей, которые движок действительно умеет создавать.
+ */
+export const MODEL_LABEL_RU: Record<string, string> = {
+  age_category: 'Возраст',
+  education: 'Образование',
+  main_activity: 'Чем занимаетесь',
+  family_situation: 'С кем живёте',
+  energy_pattern: 'Когда голова работает лучше',
+  primary: 'Чего вы хотите достичь',
+  avoid: 'Чего хотите избежать',
+  identity: 'Кем хотите стать',
+  problems: 'Что решить в первую очередь',
+  horizon: 'Ожидаемый первый результат',
+  current: 'Уже есть навыки',
+  learning: 'Сейчас учусь',
+  targets: 'Хочу освоить',
+  evidence: 'Реальные доказательства навыка',
+  areas: 'Интересы',
+  other: 'Другие интересы',
+  curiosity: 'О чём можете говорить часами',
+  wake_time: 'Обычно встаю',
+  sleep_time: 'Обычно ложусь',
+  typical_day: 'Типичный день',
+  obligations: 'Что ломает планы',
+  main: 'Главные отвлечения',
+  planning_style: 'Стиль планирования',
+  strictness: 'Насколько жёстко подгонять',
+  free_time_desired_hours: 'Свободное время (ч/день)',
+  reminder_attitude: 'Отношение к напоминаниям',
+  past_failures: 'Что не получилось раньше',
+  wants: 'Карьерное направление',
+  situation: 'Финансовая ситуация',
+  risk_tolerance: 'Склонность к риску (1–5)',
+  capital_available: 'Доступный капитал',
+  level: 'Уровень',
+  available_hours_per_day: 'Часов в день на развитие',
+  fixed_hours_per_day: 'Занятых часов в день',
+  disruptions: 'Что ломает планы',
+  definition_of_earning_well: 'Что значит «зарабатывать хорошо»',
+  realistic_daily_focus_minutes: 'Реалистичный фокус в день (мин)',
+  best_focus_window: 'Лучшее окно для фокуса',
+  formats: 'Подходящие форматы обучения',
+};
+
+export function modelLabelRu(key: string, fallback: string): string {
+  return MODEL_LABEL_RU[key] ?? fallback;
+}
+
+/**
+ * Обратный перевод: английская подпись варианта → русская. Обе таблицы (label→id→русский) строятся
+ * из самого опросника, поэтому третьего списка перевода не существует: то же соответствие, что и в
+ * вопросах. Нужен там, где движок уже подставил подпись («Модель пользователя», шаг подтверждения) —
+ * значение пришло из вопроса, но интерфейс должен показать его по-русски.
+ */
+const LABEL_RU = (() => {
+  const map = new Map<string, string>();
+  for (const block of QUESTIONNAIRE) {
+    for (const question of block.questions) {
+      for (const option of question.options ?? []) {
+        if (!map.has(option.label)) map.set(option.label, optRu(question.key, option.id, option.label));
+      }
+    }
+  }
+  return map;
+})();
+
+/**
+ * Фразы, которые движок составляет сам (не из вариантов ответа). Их немного, и они не переводятся
+ * автоматически — список проверяется тестом `model-labels.test.ts`, чтобы ни одна новая фраза
+ * движка не появилась на экране по-английски.
+ */
+export const ENGINE_PHRASE_RU: Record<string, string> = {
+  'first 3 hours after waking': 'первые 3 часа после пробуждения',
+  'late evening': 'поздний вечер',
+  'afternoon/evening': 'день и вечер',
+  'structured courses': 'структурированные курсы',
+  'project-based practice': 'практика на проектах',
+  'hands-on building': 'делать руками',
+  'documentation reading': 'чтение документации',
+  'daily short practice': 'короткая практика каждый день',
+  'speaking practice': 'разговорная практика',
+  'short daily sessions': 'короткие ежедневные занятия',
+  'micro-sessions (15-25 min)': 'микроссессии 15–25 минут',
+  'early morning (before work)': 'раннее утро, до работы',
+  'evening after work': 'вечер после работы',
+  'weekend blocks': 'блоки на выходных',
+};
+
+/** Значение пункта модели по-русски: подписи вариантов и фразы движка, свободный текст — как есть. */
+export function modelValueRu(value: unknown): string {
+  if (Array.isArray(value)) return value.map((v) => modelValueRu(v)).join(', ');
+  if (typeof value !== 'string') return String(value ?? '—');
+  const trimmed = value.trim();
+  return LABEL_RU.get(trimmed) ?? ENGINE_PHRASE_RU[trimmed] ?? value;
+}

@@ -37,6 +37,20 @@ export interface Achievement { id: string; title: string; detail: string; kind: 
  */
 export type NarrativeGenerator = (prompt: { kind: 'daily' | 'weekly' | 'monthly'; data: Record<string, unknown> }) => Promise<string | null>;
 
+/**
+ * One sentence of a review, as data instead of prose (req. 77, 78).
+ *
+ * The engine writes its sentences in English: they are produced once, persisted with the review and
+ * read back by the AI context and the JSON export. The user reads the app in their own language, so
+ * every sentence is *also* stored as a code plus the numbers behind it, and the client words it
+ * (`apps/web/src/lib/review-ru.ts`). Adding a code here means adding its wording there — the client
+ * test walks a real review and asserts that every emitted code has a Russian sentence.
+ */
+export interface ReviewItem {
+  code: string;
+  params?: Record<string, string | number>;
+}
+
 /** Progress + daily/weekly/monthly aggregation (req. 11, 76, 77, 78). */
 export class ProgressService {
   constructor(
@@ -373,19 +387,65 @@ export class WeeklyReviewService {
     const learningSettings = await this.settings.get('learning');
     const learningTarget = learningSettings.daily_minutes * 7;
 
+    // Each sentence is produced in both shapes at once, from the same condition: English prose for the
+    // AI/export, code+numbers for the interface. Two separate `if`s would be two sources of truth and
+    // would drift the first time one of them is edited.
     const patterns: string[] = [];
-    if (metrics.completion_rate < 0.5 && metrics.tasks_planned > 10) patterns.push(`Only ${Math.round(metrics.completion_rate * 100)}% of ${metrics.tasks_planned} planned tasks were completed — the plan is systematically too heavy.`);
+    const patternItems: ReviewItem[] = [];
+    const note = (text: string | null, item: ReviewItem | null): void => {
+      if (text) patterns.push(text);
+      if (item) patternItems.push(item);
+    };
+
+    if (metrics.completion_rate < 0.5 && metrics.tasks_planned > 10) {
+      const percent = Math.round(metrics.completion_rate * 100);
+      note(
+        `Only ${percent}% of ${metrics.tasks_planned} planned tasks were completed — the plan is systematically too heavy.`,
+        { code: 'plan_too_heavy', params: { percent, planned: metrics.tasks_planned } },
+      );
+    }
     if (bestHours.length && worstHours.length && bestHours[0].hour !== worstHours[0].hour) {
-      patterns.push(`Work scheduled around ${bestHours[0].hour}:00 gets done ${Math.round(bestHours[0].rate * 100)}% of the time; around ${worstHours[0].hour}:00 only ${Math.round(worstHours[0].rate * 100)}%.`);
+      const best = bestHours[0];
+      const worst = worstHours[0];
+      note(
+        `Work scheduled around ${best.hour}:00 gets done ${Math.round(best.rate * 100)}% of the time; around ${worst.hour}:00 only ${Math.round(worst.rate * 100)}%.`,
+        { code: 'best_hours', params: { best: best.hour, bestRate: Math.round(best.rate * 100), worst: worst.hour, worstRate: Math.round(worst.rate * 100) } },
+      );
     }
     const procrastination = reasons.procrastination ?? 0;
-    if (procrastination >= 2) patterns.push(`Procrastination was the stated reason ${procrastination} times — worth looking at what those tasks have in common.`);
-    if (metrics.plan_accuracy > 1.3) patterns.push(`Actual time ran ~${Math.round((metrics.plan_accuracy - 1) * 100)}% over estimates.`);
-    if (untouched.length) patterns.push(`No movement on: ${untouched.slice(0, 4).join('; ')}.`);
-    if (learningMinutes < learningTarget * 0.5 && learningTarget > 0) patterns.push(`Learning got ${formatDuration(learningMinutes)} of the ${formatDuration(learningTarget)} weekly target.`);
-    if (metrics.days_active >= 6) patterns.push(`Active ${metrics.days_active}/7 days — consistency is the strongest signal this week.`);
+    if (procrastination >= 2) {
+      note(
+        `Procrastination was the stated reason ${procrastination} times — worth looking at what those tasks have in common.`,
+        { code: 'procrastination', params: { count: procrastination } },
+      );
+    }
+    if (metrics.plan_accuracy > 1.3) {
+      const over = Math.round((metrics.plan_accuracy - 1) * 100);
+      note(
+        `Actual time ran ~${over}% over estimates.`,
+        { code: 'estimate_overrun', params: { percent: over } },
+      );
+    }
+    if (untouched.length) {
+      note(
+        `No movement on: ${untouched.slice(0, 4).join('; ')}.`,
+        { code: 'untouched_goals', params: { count: untouched.length, titles: untouched.slice(0, 4).join('; ') } },
+      );
+    }
+    if (learningMinutes < learningTarget * 0.5 && learningTarget > 0) {
+      note(
+        `Learning got ${formatDuration(learningMinutes)} of the ${formatDuration(learningTarget)} weekly target.`,
+        { code: 'learning_behind', params: { minutes: learningMinutes, target: learningTarget } },
+      );
+    }
+    if (metrics.days_active >= 6) {
+      note(
+        `Active ${metrics.days_active}/7 days — consistency is the strongest signal this week.`,
+        { code: 'consistency', params: { days: metrics.days_active } },
+      );
+    }
 
-    return { metrics, reasons, bestHours, worstHours, untouchedGoals: untouched, learningMinutes, learningTarget, patterns, completed_count: completedTasks(history).length };
+    return { metrics, reasons, bestHours, worstHours, untouchedGoals: untouched, learningMinutes, learningTarget, patterns, pattern_items: patternItems, completed_count: completedTasks(history).length };
   }
 
   async create(weekStart: string = dayKey(startOfWeek()), ctx: WriteContext = { actor: 'system' }): Promise<WeeklyReview> {
@@ -395,18 +455,20 @@ export class WeeklyReviewService {
     const history = await this.repos.taskHistory.find({ at: { op: 'gte', value: `${weekStart}T00:00:00Z` } }, { limit: 3000 });
     const completedTasks = history.filter((h) => h.action === 'completed');
 
-    const wentWell = [
-      completedTasks.length ? `${completedTasks.length} tasks completed (${formatDuration(metrics.focus_minutes)} of focus).` : null,
-      metrics.learning_minutes > 0 ? `${formatDuration(metrics.learning_minutes)} spent learning.` : null,
-      metrics.streak >= 3 ? `${metrics.streak}-day streak.` : null,
-      metrics.days_active >= 5 ? `Active ${metrics.days_active} of 7 days.` : null,
-    ].filter(Boolean) as string[];
+    const wentWell: string[] = [];
+    const wentWellItems: ReviewItem[] = [];
+    const well = (text: string, item: ReviewItem): void => { wentWell.push(text); wentWellItems.push(item); };
+    if (completedTasks.length) well(`${completedTasks.length} tasks completed (${formatDuration(metrics.focus_minutes)} of focus).`, { code: 'tasks_completed', params: { count: completedTasks.length, focusMinutes: Math.round(metrics.focus_minutes) } });
+    if (metrics.learning_minutes > 0) well(`${formatDuration(metrics.learning_minutes)} spent learning.`, { code: 'learning_time', params: { minutes: Math.round(metrics.learning_minutes) } });
+    if (metrics.streak >= 3) well(`${metrics.streak}-day streak.`, { code: 'streak', params: { days: metrics.streak } });
+    if (metrics.days_active >= 5) well(`Active ${metrics.days_active} of 7 days.`, { code: 'days_active', params: { days: metrics.days_active } });
 
-    const wentWrong = [
-      metrics.tasks_postponed ? `${metrics.tasks_postponed} tasks postponed.` : null,
-      metrics.completion_rate < 0.6 && metrics.tasks_planned >= 5 ? `Completion rate ${Math.round(metrics.completion_rate * 100)}%.` : null,
-      (analysis.untouchedGoals as string[]).length ? `${(analysis.untouchedGoals as string[]).length} active goal(s) without movement.` : null,
-    ].filter(Boolean) as string[];
+    const wentWrong: string[] = [];
+    const wentWrongItems: ReviewItem[] = [];
+    const wrong = (text: string, item: ReviewItem): void => { wentWrong.push(text); wentWrongItems.push(item); };
+    if (metrics.tasks_postponed) wrong(`${metrics.tasks_postponed} tasks postponed.`, { code: 'postponed', params: { count: metrics.tasks_postponed } });
+    if (metrics.completion_rate < 0.6 && metrics.tasks_planned >= 5) wrong(`Completion rate ${Math.round(metrics.completion_rate * 100)}%.`, { code: 'completion_rate', params: { percent: Math.round(metrics.completion_rate * 100) } });
+    if ((analysis.untouchedGoals as string[]).length) wrong(`${(analysis.untouchedGoals as string[]).length} active goal(s) without movement.`, { code: 'untouched_goals', params: { count: (analysis.untouchedGoals as string[]).length } });
 
     const nextWeek = await this.nextWeekActions(analysis);
     const narrative = this.narrative
@@ -422,7 +484,20 @@ export class WeeklyReviewService {
       improved: JSON.stringify(nextWeek.improved),
       next_week: JSON.stringify(nextWeek.actions),
       analysis: narrative ?? patterns.join(' '),
-      patterns: JSON.stringify({ bestHours: analysis.bestHours, worstHours: analysis.worstHours, reasons: analysis.reasons }),
+      // `patterns` carries the structured side of this review: the sentences above stay English for the
+      // AI and the export, while `items` lets the interface word them in the user's language. Old
+      // reviews simply have no `items` — the screen then falls back to the numbers it can read.
+      patterns: JSON.stringify({
+        bestHours: analysis.bestHours, worstHours: analysis.worstHours, reasons: analysis.reasons,
+        items: {
+          went_well: wentWellItems,
+          went_wrong: wentWrongItems,
+          changed: (analysis.pattern_items as ReviewItem[]) ?? [],
+          next_week: nextWeek.action_items,
+          improved: nextWeek.improved_items,
+        },
+        narrative: narrative ? 'ai' : 'engine',
+      }),
       metrics_json: JSON.stringify(metrics),
     };
     if (existing) return (await this.repos.weeklyReviews.update(existing.id, payload as never, { ...ctx, reason: 'weekly review updated' }))!;
@@ -430,29 +505,53 @@ export class WeeklyReviewService {
     return this.repos.weeklyReviews.insert({ id: newId(), week_start: weekStart, ...payload } as never, ctx);
   }
 
-  private async nextWeekActions(analysis: Record<string, unknown>): Promise<{ actions: string[]; improved: string[] }> {
+  private async nextWeekActions(analysis: Record<string, unknown>): Promise<{ actions: string[]; improved: string[]; action_items: ReviewItem[]; improved_items: ReviewItem[] }> {
     const metrics = analysis.metrics as WeekMetrics;
     const actions: string[] = [];
     const improved: string[] = [];
+    const actionItems: ReviewItem[] = [];
+    const improvedItems: ReviewItem[] = [];
+    const plan = (text: string, item: ReviewItem, better: string, betterItem: ReviewItem): void => {
+      actions.push(text); actionItems.push(item);
+      improved.push(better); improvedItems.push(betterItem);
+    };
     const planning = await this.settings.get('planning');
 
     if (metrics.completion_rate < 0.6) {
       const suggested = Math.max(60, Math.round((planning.max_focus_hours_per_day * 60) * 0.7));
-      actions.push(`Cut the planned daily load to ~${formatDuration(suggested)} and keep only P0/P1 items until the completion rate recovers.`);
-      improved.push('Smaller daily plan');
+      plan(
+        `Cut the planned daily load to ~${formatDuration(suggested)} and keep only P0/P1 items until the completion rate recovers.`,
+        { code: 'cut_load', params: { minutes: suggested } },
+        'Smaller daily plan', { code: 'smaller_plan' },
+      );
     }
     const best = (analysis.bestHours as { hour: number; rate: number }[])[0];
     if (best) {
-      actions.push(`Put the hardest work at ${best.hour}:00 — that is when your completion rate is highest (${Math.round(best.rate * 100)}%).`);
-      improved.push('Better time-of-day fit');
+      plan(
+        `Put the hardest work at ${best.hour}:00 — that is when your completion rate is highest (${Math.round(best.rate * 100)}%).`,
+        { code: 'hardest_at_hour', params: { hour: best.hour, rate: Math.round(best.rate * 100) } },
+        'Better time-of-day fit', { code: 'time_of_day_fit' },
+      );
     }
     const untouched = analysis.untouchedGoals as string[];
-    if (untouched.length) actions.push(`Pick ONE of these and give it a concrete 30-minute task this week: ${untouched.slice(0, 3).join(', ')}.`);
+    if (untouched.length) {
+      actions.push(`Pick ONE of these and give it a concrete 30-minute task this week: ${untouched.slice(0, 3).join(', ')}.`);
+      actionItems.push({ code: 'pick_one_goal', params: { titles: untouched.slice(0, 3).join('; '), count: untouched.length } });
+    }
     const reasons = analysis.reasons as Record<string, number>;
-    if ((reasons.procrastination ?? 0) >= 2) actions.push('For the tasks you keep avoiding, use the 10-minute minimal version instead of the full task.');
-    if ((metrics.learning_minutes ?? 0) < (analysis.learningTarget as number ?? 0) * 0.5) actions.push('Schedule learning as a fixed calendar block, not as leftover time.');
-    if (!actions.length) actions.push('Keep the current structure — it is producing results.');
-    return { actions, improved };
+    if ((reasons.procrastination ?? 0) >= 2) {
+      actions.push('For the tasks you keep avoiding, use the 10-minute minimal version instead of the full task.');
+      actionItems.push({ code: 'minimal_version', params: { count: reasons.procrastination ?? 0 } });
+    }
+    if ((metrics.learning_minutes ?? 0) < (analysis.learningTarget as number ?? 0) * 0.5) {
+      actions.push('Schedule learning as a fixed calendar block, not as leftover time.');
+      actionItems.push({ code: 'schedule_learning', params: { minutes: Math.round(metrics.learning_minutes ?? 0), target: Math.round((analysis.learningTarget as number) ?? 0) } });
+    }
+    if (!actions.length) {
+      actions.push('Keep the current structure — it is producing results.');
+      actionItems.push({ code: 'keep_structure' });
+    }
+    return { actions, improved, action_items: actionItems, improved_items: improvedItems };
   }
 
   async latest(limit = 8): Promise<WeeklyReview[]> { return this.repos.weeklyReviews.find({}, { orderBy: { week_start: 'desc' }, limit }); }
@@ -499,15 +598,19 @@ export class MonthlyReviewService {
     const skillSummary = skills.map((s) => ({ id: s.id, name: s.name, level: Number(s.level), confidence: s.confidence, last_assessment: s.last_assessment_at, due: s.next_assessment_at && s.next_assessment_at <= dayKey() }));
     const projectSummary = projects.map((p) => ({ id: p.id, title: p.title, status: p.status, progress: Number(p.progress), health: p.health, deadline: p.deadline }));
 
+    // English prose for the AI and the export, code+numbers for the interface — same conditions, one
+    // place, so the two can never disagree (see `ReviewItem`).
     const priorityChanges: string[] = [];
+    const priorityItems: ReviewItem[] = [];
+    const notice = (text: string, item: ReviewItem): void => { priorityChanges.push(text); priorityItems.push(item); };
     const staleGoals = goalSummary.filter((g) => g.stale);
-    if (staleGoals.length) priorityChanges.push(`${staleGoals.length} active goal(s) had no movement for 30+ days: ${staleGoals.map((g) => g.title).slice(0, 4).join(', ')}. Decide: adjust, pause or archive.`);
+    if (staleGoals.length) notice(`${staleGoals.length} active goal(s) had no movement for 30+ days: ${staleGoals.map((g) => g.title).slice(0, 4).join(', ')}. Decide: adjust, pause or archive.`, { code: 'stale_goals', params: { count: staleGoals.length, titles: staleGoals.map((g) => g.title).slice(0, 4).join('; ') } });
     const overdue = goalSummary.filter((g) => g.overdue);
-    if (overdue.length) priorityChanges.push(`${overdue.length} goal(s) past their target date: ${overdue.map((g) => g.title).slice(0, 4).join(', ')}.`);
+    if (overdue.length) notice(`${overdue.length} goal(s) past their target date: ${overdue.map((g) => g.title).slice(0, 4).join(', ')}.`, { code: 'overdue_goals', params: { count: overdue.length, titles: overdue.map((g) => g.title).slice(0, 4).join('; ') } });
     const dueAssessments = skillSummary.filter((s) => s.due);
-    if (dueAssessments.length) priorityChanges.push(`Skill assessments due: ${dueAssessments.map((s) => s.name).slice(0, 5).join(', ')}.`);
+    if (dueAssessments.length) notice(`Skill assessments due: ${dueAssessments.map((s) => s.name).slice(0, 5).join(', ')}.`, { code: 'skill_assessments_due', params: { count: dueAssessments.length, names: dueAssessments.map((s) => s.name).slice(0, 5).join('; ') } });
     const stalled = projectSummary.filter((p) => p.health === 'stalled' || p.health === 'at_risk');
-    if (stalled.length) priorityChanges.push(`Projects needing a decision: ${stalled.map((p) => `${p.title} (${p.health})`).join(', ')}.`);
+    if (stalled.length) notice(`Projects needing a decision: ${stalled.map((p) => `${p.title} (${p.health})`).join(', ')}.`, { code: 'projects_need_decision', params: { count: stalled.length, titles: stalled.map((p) => p.title).slice(0, 4).join('; ') } });
 
     const proposal = [
       `Month ${month}: ${metrics.tasks_completed} tasks completed, ${formatDuration(metrics.focus_minutes)} of focus, ${formatDuration(metrics.learning_minutes)} of learning, ${metrics.goals_achieved} goal(s) achieved, ${metrics.skill_assessments} skill assessment(s).`,
@@ -521,7 +624,14 @@ export class MonthlyReviewService {
       goals_json: JSON.stringify(goalSummary),
       skills_json: JSON.stringify(skillSummary),
       projects_json: JSON.stringify(projectSummary),
-      priority_changes: JSON.stringify(priorityChanges),
+      // The structured form of «что менять в приоритетах» + the suggested strategy. The English
+      // sentences stay inside `strategy_proposal` (which the AI and the export read), so nothing is
+      // lost by storing codes here instead of prose.
+      priority_changes: JSON.stringify({
+        items: priorityItems,
+        strategy: [{ code: 'strategy_suggestion', params: { maxPriorities: 3 } }],
+        narrative: narrative ? 'ai' : 'engine',
+      }),
       strategy_proposal: narrative ?? proposal,
       metrics_json: JSON.stringify(metrics),
     };

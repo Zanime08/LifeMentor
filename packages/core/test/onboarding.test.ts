@@ -49,6 +49,43 @@ const STUDENT: Record<string, unknown> = {
   income_expectation: 'enough to be financially independent from my parents',
 };
 
+/** The same life, told in Russian — the case the shipped interface is actually built for. */
+const RU_ANSWERS: Record<string, unknown> = {
+  age_category: '25_34',
+  education: 'bachelor',
+  main_activity: ['work_full_time'],
+  fixed_hours_per_day: 8,
+  available_hours_per_day: 2,
+  family_situation: 'partner',
+  energy_pattern: 'morning',
+  what_you_want: 'Сменить работу на удалённую и закрыть кредит',
+  what_to_avoid: 'поздние звонки и переработки',
+  who_to_become: 'специалист, которого берут на удалёнку',
+  problems_to_solve: 'нет сил после работы',
+  goal_horizon: '1y',
+  skills_have: 'аналитика, отчётность',
+  skills_learning: 'SQL',
+  skills_want: 'статистика, визуализация данных',
+  proof_of_skill: 'Собрал дашборд, которым пользуется отдел из 8 человек',
+  interests: ['technology', 'ai'],
+  curiosity: 'как модели учатся на данных',
+  wake_time: '07:00',
+  sleep_time: '23:00',
+  typical_day: 'работа до 18:00, потом дорога домой',
+  distractions: ['phone', 'short_videos'],
+  obligations: 'ужин с семьёй',
+  planning_style: 'balanced',
+  strictness: 6,
+  free_time_desired: 1.5,
+  reminder_attitude: 'gentle',
+  planning_history: 'планы ломались, когда начинались авралы',
+  career_direction: ['stable_career'],
+  financial_situation: 'tight',
+  risk_tolerance: 2,
+  capital_available: 0,
+  income_expectation: 'стабильный доход, покрывающий кредит',
+};
+
 const PARENT: Record<string, unknown> = {
   age_category: '35_44',
   education: 'vocational',
@@ -87,11 +124,13 @@ const PARENT: Record<string, unknown> = {
 let dir: string;
 let studentPath: string;
 let parentPath: string;
+let russianPath: string;
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'lifementor-onboarding-'));
   studentPath = join(dir, 'student.sqlite');
   parentPath = join(dir, 'parent.sqlite');
+  russianPath = join(dir, 'russian.sqlite');
 });
 
 afterAll(() => {
@@ -156,6 +195,55 @@ describe('questionnaire', () => {
     expect(status.answered).toBe(4);
     expect(status.session.status).toBe('in_progress');
     await reopened.close();
+  });
+});
+
+describe('the language the app speaks to the user', () => {
+  it('builds the summary, the goal drafts and the settings in the configured language (req. 6, 7)', async () => {
+    // The interface is Russian and, until now, the engine answered in English: the confirmation step
+    // («вот как я вас понял») showed "You want: …", and goals were created titled
+    // "Learn X to a usable level" — inside the user's own data.
+    const app = await openApp(russianPath, 'device-ru');
+    await app.services.onboarding.start();
+    await answerAll(app, RU_ANSWERS);
+    await app.services.onboarding.finishInterview();
+    // Russian output must not depend on the AI being present: the deterministic path is the one that
+    // always runs (a self-hosted install has no model key at all).
+    await app.services.settings.setMany({ ai: { language: 'ru', provider_preference: 'local' }, profile: { locale: 'ru' } });
+
+    const preview = await app.services.onboarding.previewModel();
+    expect(preview.summary).toContain('Вы хотите');
+    expect(preview.summary).not.toContain('You have not told me');
+    expect(preview.summary).toMatch(/ч в день/);
+    expect(preview.settings_preview.ai).toMatchObject({ language: 'ru' });
+
+    const drafts = await app.services.onboarding.suggestGoals();
+    expect(drafts.length).toBeGreaterThan(0);
+    for (const draft of drafts) {
+      expect(draft.title, draft.title).toMatch(/[а-яё]/i);
+      expect(draft.title).not.toMatch(/to a usable level|^Reduce:/);
+    }
+    // The goals the user confirms are their own data: what is stored must be in their language too.
+    await app.services.onboarding.createGoals(drafts.slice(0, 2));
+    const goals = await app.services.goals.list({ status: 'active' });
+    expect(goals.length).toBe(2);
+    for (const goal of goals) expect(goal.title).toMatch(/[а-яё]/i);
+
+    await app.close();
+  });
+
+  it('keeps English for an English-speaking user (the default)', async () => {
+    const app = await openApp(parentPath, 'device-parent');
+    await app.services.onboarding.start();
+    await answerAll(app, STUDENT);
+    await app.services.onboarding.finishInterview();
+
+    const preview = await app.services.onboarding.previewModel();
+    expect(preview.summary).toContain('You want');
+    expect(preview.settings_preview.ai).toMatchObject({ language: 'en' });
+    const drafts = await app.services.onboarding.suggestGoals();
+    expect(drafts.some((d) => /^Learn .* to a usable level$/.test(d.title))).toBe(true);
+    await app.close();
   });
 });
 

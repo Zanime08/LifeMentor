@@ -71,6 +71,8 @@ async function button(name: string | RegExp) {
 
 describe('first run in the browser client (dom, real engine)', () => {
   it('walks welcome → questionnaire → adaptive interview → confirmed model → dashboard', async () => {
+    // The real client decides the language on the first launch (browser language). The harness starts
+    // from engine defaults ('en'), so the confirmation step is asserted in both modes further down.
     render(<App />);
 
     // ── Gate: the first screen explains what the app is going to do (req. 74, 100) ──
@@ -443,6 +445,69 @@ describe('first run in the browser client (dom, real engine)', () => {
     await user.type(box, 'зыбучий песок на Марсе');
     expect(await screen.findByText(/Ничего не нашлось/, {}, { timeout: 20_000 })).toBeTruthy();
   }, 120_000);
+
+  it('shows the user model in Russian, not in the engine\'s English (req. 6, 7)', async () => {
+    window.location.hash = '#/profile';
+    render(<App />);
+    await waitFor(() => expect(openApp()).not.toBeNull(), { timeout: 30_000 });
+    // The client decides this at the first launch, from the device language; here we set it the way
+    // the bootstrap does and force the screen to reload.
+    await openApp()!.services.settings.setMany({ ai: { language: 'ru' }, profile: { locale: 'ru' } });
+    window.location.hash = '#/today';
+    window.location.hash = '#/profile';
+
+    const head = await screen.findByText('Модель пользователя', {}, { timeout: 30_000 });
+    const card = head.closest('.card') as HTMLElement;
+    const text = card.textContent ?? '';
+    // Labels and values are worded by the interface (the engine's English strings are internal).
+    expect(text).toMatch(/Чего вы хотите достичь/);
+    expect(text).not.toMatch(/Age range|Education|Current activity|What you want to achieve|Interests|Sharpest time of day/);
+    expect(text).not.toMatch(/Studying|Working full-time|Morning|Afternoon/);
+    // The values the user typed themselves are untouched.
+    expect(text).toMatch(/Работаю и учусь/);
+  }, 120_000);
+
+  it('shows the reviews in Russian, not as stored JSON (req. 77, 78)', async () => {
+    window.location.hash = '#/today';
+    render(<App />);
+    await waitFor(() => expect(openApp()).not.toBeNull(), { timeout: 30_000 });
+    const app = openApp()!;
+    // A week with two finished tasks and one the user pushed away, saying why.
+    const first = await app.services.tasks.create({ title: 'Разобрать главу по алгоритмам' });
+    const second = await app.services.tasks.create({ title: 'Написать тесты для парсера' });
+    const third = await app.services.tasks.create({ title: 'Свести бюджет за месяц' });
+    await app.services.tasks.complete(first.id, { actual_minutes: 45 });
+    await app.services.tasks.complete(second.id, { actual_minutes: 45 });
+    await app.services.tasks.postpone(third.id, { reason: 'lack_of_time' });
+
+    await app.services.weeklyReviews.create();
+    await app.services.monthlyReviews.create();
+
+    window.location.hash = '#/progress';
+    const weekly = await screen.findByText(/Неделя с/, {}, { timeout: 30_000 });
+    const card = weekly.closest('.list-item') as HTMLElement;
+    const text = card.textContent ?? '';
+
+    // The numbers are there, in Russian, as sentences a person can read…
+    expect(text).toMatch(/Сделано задач: \d+ · /);
+    expect(text).toMatch(/Перенесено задач: \d+/);
+    // …the user's own reason for postponing is named in their own words…
+    expect(text).toMatch(/Тормозило: Не хватает времени — 1/);
+    // …and nothing of the stored machine form leaks into the screen.
+    expect(text).not.toContain('"code"');
+    expect(text).not.toContain('tasks completed');
+    expect(text).not.toMatch(/\[\s*\{/);
+
+    // The monthly review proposes a strategy in Russian instead of the engine's English prose.
+    const month = (await screen.findByText(/^\d{4}-\d{2}$/, {}, { timeout: 20_000 })).closest('.list-item') as HTMLElement;
+    const monthText = month.textContent ?? '';
+    expect(monthText).toMatch(/Стратегия на следующий месяц: не больше 3 активных приоритетов/);
+    expect(monthText).not.toContain('Suggested strategy for next month');
+    expect(monthText).toMatch(/задач: \d+/);
+
+    // And the 30-day view of why work slips is on the same screen (req. 29: patterns, not raw stats).
+    expect(await screen.findByText(/За 30 дней перенесено \d+ (задача|задачи|задач) · причины: Не хватает времени — 1/, {}, { timeout: 20_000 })).toBeTruthy();
+  }, 180_000);
 
   it('returns to the last screen and keeps an unsent message (req. 13)', async () => {
     window.location.hash = '#/mentor';

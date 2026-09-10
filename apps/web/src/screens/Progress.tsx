@@ -1,8 +1,45 @@
 import React, { useEffect, useState } from 'react';
-import type { DailySnapshot, DayMetrics, MonthlyReview, WeeklyReview } from '@lifementor/core';
+import type { DailySnapshot, DayMetrics, MonthlyReview, ReviewItem, WeeklyReview } from '@lifementor/core';
 import { Btn, Card, Empty, PageHead, Spinner, Tag, BarChart } from '../components/ui';
 import { useApp } from '../state/store';
-import { fmtDay, fmtDayShort, fmtMinutes, timeAgo, todayKey } from '../lib/ru';
+import { REASON_RU, fmtDay, fmtDayShort, fmtMinutes, plural, timeAgo, todayKey } from '../lib/ru';
+import { isAiNarrative, parseJson, parseReviewItems, reviewItemText } from '../lib/review-ru';
+
+/** The part of a weekly review the interface needs, read from its structured column. */
+interface WeeklyStructure {
+  bestHours?: { hour: number; rate: number; total?: number }[];
+  worstHours?: { hour: number; rate: number; total?: number }[];
+  reasons?: Record<string, number>;
+  items?: {
+    went_well?: ReviewItem[];
+    went_wrong?: ReviewItem[];
+    changed?: ReviewItem[];
+    next_week?: ReviewItem[];
+    improved?: ReviewItem[];
+  };
+  narrative?: 'ai' | 'engine';
+}
+
+function reviewLines(items?: ReviewItem[]): string[] {
+  return (items ?? []).map((item) => reviewItemText(item)).filter((t): t is string => !!t);
+}
+
+function Bullets({ items, testId }: { items?: ReviewItem[]; testId?: string }) {
+  const lines = reviewLines(items);
+  if (!lines.length) return null;
+  return (
+    <ul className="review-list" data-testid={testId}>
+      {lines.map((line, i) => <li key={i} className="small">{line}</li>)}
+    </ul>
+  );
+}
+
+/** «Не хватает времени — 3, усталость — 1» — the reasons the user themselves gave. */
+function reasonLine(reasons?: Record<string, number>): string | null {
+  const entries = Object.entries(reasons ?? {}).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return null;
+  return entries.map(([reason, n]) => `${REASON_RU[reason] ?? reason} — ${n}`).join(', ');
+}
 
 export function ProgressScreen() {
   const { app, version, mutate, toast, toastError } = useApp();
@@ -14,21 +51,24 @@ export function ProgressScreen() {
   const [monthly, setMonthly] = useState<MonthlyReview[]>([]);
   const [openSnap, setOpenSnap] = useState<DailySnapshot | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [postpones, setPostpones] = useState<{ total: number; by_reason: Record<string, number> } | null>(null);
 
   useEffect(() => {
     if (!app) return;
     let stop = false;
     (async () => {
       try {
-        const [s, st, a, sn, w, m] = await Promise.all([
+        const [s, st, a, sn, w, m, po] = await Promise.all([
           app.services.progress.series(14),
           app.services.progress.streak(),
           app.services.progress.achievements(),
           app.services.snapshots.list(30),
           app.services.weeklyReviews.latest(8),
           app.services.monthlyReviews.latest(6),
+          // Why tasks slip, over a month: the reasons are typed by the user when they postpone.
+          app.services.tasks.postponeStats(30),
         ]);
-        if (!stop) { setSeries(s); setStreak(st); setAchievements(a); setSnapshots(sn); setWeekly(w); setMonthly(m); }
+        if (!stop) { setSeries(s); setStreak(st); setAchievements(a); setSnapshots(sn); setWeekly(w); setMonthly(m); setPostpones(po); }
       } catch (e) { console.error(e); }
     })();
     return () => { stop = true; };
@@ -113,32 +153,104 @@ export function ProgressScreen() {
 
           <Card title="Месячные разборы" sub="Цели, навыки, проекты и предложение по стратегии — создаётся автоматически в начале месяца">
             {monthly.length === 0 && <div className="small muted">Первый месячный разбор появится сам после первого полного месяца работы — или по кнопке выше.</div>}
-            {monthly.map((m) => (
-              <div key={m.id} className="list-item" style={{ alignItems: 'flex-start' }}>
-                <div className="li-main">
-                  <div className="li-title">{m.month}</div>
-                  <div className="li-sub">создан {timeAgo(m.created_at)}</div>
-                  {m.priority_changes && <div className="small mt-sm"><b>Приоритеты:</b> {m.priority_changes}</div>}
-                  {m.strategy_proposal && <div className="small" style={{ whiteSpace: 'pre-wrap' }}><b>Стратегия:</b> {m.strategy_proposal}</div>}
+            {monthly.map((m) => {
+              const metrics = parseJson<Record<string, number>>(m.metrics_json);
+              const priorities = parseReviewItems(m.priority_changes);
+              const strategy = parseJson<{ strategy?: ReviewItem[] }>(m.priority_changes)?.strategy;
+              const ai = isAiNarrative(m.priority_changes);
+              return (
+                <div key={m.id} className="list-item" style={{ alignItems: 'flex-start' }}>
+                  <div className="li-main">
+                    <div className="li-title">{m.month}</div>
+                    <div className="li-sub">создан {timeAgo(m.created_at)}</div>
+                    {metrics && (
+                      <div className="row wrap mt-sm" style={{ gap: 6 }}>
+                        <Tag tone="outline">задач: {metrics.tasks_completed ?? 0}</Tag>
+                        <Tag tone="outline">фокус: {fmtMinutes(Number(metrics.focus_minutes ?? 0))}</Tag>
+                        <Tag tone="outline">обучение: {fmtMinutes(Number(metrics.learning_minutes ?? 0))}</Tag>
+                        <Tag tone="outline">достигнуто целей: {metrics.goals_achieved ?? 0}</Tag>
+                        <Tag tone="outline">оценок навыков: {metrics.skill_assessments ?? 0}</Tag>
+                      </div>
+                    )}
+                    {priorities.length > 0 && (
+                      <>
+                        <div className="section-title" style={{ marginTop: 6 }}>Приоритеты</div>
+                        <Bullets items={priorities} testId="monthly-priorities" />
+                      </>
+                    )}
+                    {/* The AI writes in the user's language, so its wording is shown as-is; the
+                        deterministic fallback is English prose and is replaced by the structured
+                        strategy line instead. */}
+                    {ai && m.strategy_proposal && (
+                      <div className="small mt-sm" style={{ whiteSpace: 'pre-wrap' }}><b>Стратегия:</b> {m.strategy_proposal}</div>
+                    )}
+                    {!ai && strategy && (
+                      <div className="mt-sm">
+                        <div className="section-title">Стратегия</div>
+                        <Bullets items={strategy} testId="monthly-strategy" />
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </Card>
 
           <Card title="Еженедельные разборы" sub="Искать закономерности, а не пересказывать статистику — прошедшая неделя разбирается автоматически">
             {weekly.length === 0 && <div className="small muted">Ещё не было разборов: первый появится сам после первой недели с активностью — или нажмите «Еженедельный разбор».</div>}
-            {weekly.map((w) => (
-              <div key={w.id} className="list-item" style={{ alignItems: 'flex-start' }}>
-                <div className="li-main">
-                  <div className="li-title">Неделя с {fmtDay(w.week_start)}</div>
-                  <div className="li-sub">создан {timeAgo(w.created_at)}</div>
-                  {w.went_well && <div className="small mt-sm"><b>Вышло:</b> {w.went_well}</div>}
-                  {w.went_wrong && <div className="small"><b>Не вышло:</b> {w.went_wrong}</div>}
-                  {w.blockers && <div className="small"><b>Тормозит:</b> {w.blockers}</div>}
-                  {w.next_week && <div className="small"><b>Следующая неделя:</b> {w.next_week}</div>}
+            {weekly.map((w) => {
+              const structure = parseJson<WeeklyStructure>(w.patterns);
+              const metrics = parseJson<Record<string, number>>(w.metrics_json);
+              const ai = structure?.narrative === 'ai' && !!w.analysis;
+              return (
+                <div key={w.id} className="list-item" style={{ alignItems: 'flex-start' }}>
+                  <div className="li-main">
+                    <div className="li-title">Неделя с {fmtDay(w.week_start)}</div>
+                    <div className="li-sub">создан {timeAgo(w.created_at)}</div>
+                    {metrics && (
+                      <div className="row wrap mt-sm" style={{ gap: 6 }}>
+                        <Tag tone="outline">задач сделано: {metrics.tasks_completed ?? 0}</Tag>
+                        <Tag tone="outline">фокус: {fmtMinutes(Number(metrics.focus_minutes ?? 0))}</Tag>
+                        <Tag tone="outline">обучение: {fmtMinutes(Number(metrics.learning_minutes ?? 0))}</Tag>
+                        <Tag tone="outline">активных дней: {metrics.days_active ?? 0}/7</Tag>
+                      </div>
+                    )}
+                    {reviewLines(structure?.items?.went_well).length > 0 && (
+                      <>
+                        <div className="section-title" style={{ marginTop: 6 }}>Вышло</div>
+                        <Bullets items={structure?.items?.went_well} testId="weekly-went-well" />
+                      </>
+                    )}
+                    {reviewLines(structure?.items?.went_wrong).length > 0 && (
+                      <>
+                        <div className="section-title">Не вышло</div>
+                        <Bullets items={structure?.items?.went_wrong} testId="weekly-went-wrong" />
+                      </>
+                    )}
+                    {reasonLine(structure?.reasons) && <div className="small mt-sm">Тормозило: {reasonLine(structure?.reasons)}</div>}
+                    {reviewLines(structure?.items?.changed).length > 0 && (
+                      <>
+                        <div className="section-title">Что заметила система</div>
+                        <Bullets items={structure?.items?.changed} testId="weekly-changed" />
+                      </>
+                    )}
+                    {reviewLines(structure?.items?.next_week).length > 0 && (
+                      <>
+                        <div className="section-title">Следующая неделя</div>
+                        <Bullets items={structure?.items?.next_week} testId="weekly-next-week" />
+                      </>
+                    )}
+                    {ai && <div className="small mt-sm" style={{ whiteSpace: 'pre-wrap' }}>{w.analysis}</div>}
+                  </div>
                 </div>
+              );
+            })}
+            {postpones && postpones.total > 0 && (
+              <div className="small muted mt-sm">
+                За 30 дней перенесено {postpones.total} {plural(postpones.total, 'задача', 'задачи', 'задач')}
+                {reasonLine(postpones.by_reason) ? ` · причины: ${reasonLine(postpones.by_reason)}` : ''}
               </div>
-            ))}
+            )}
           </Card>
         </div>
 

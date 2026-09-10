@@ -352,3 +352,7 @@ code.mono { font-family: "Cascadia Code", "SF Mono", Consolas, monospace; font-s
   .content { padding: 14px; }
   .msg { max-width: 92%; }
 }
+
+/* Review bullets (weekly/monthly reviews): a list of sentences, not a wall of text. */
+.review-list { margin: 4px 0 0; padding-left: 18px; }
+.review-list li { margin: 2px 0; }

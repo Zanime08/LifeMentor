@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { Memory, ScoredMemory, UserModel } from '@lifementor/core';
 import { Btn, Card, Confirm, Empty, I, PageHead, Spinner, Tag, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
-import { SECTION_RU } from '../lib/onboarding-ru';
+import { SECTION_RU, modelLabelRu, modelValueRu } from '../lib/onboarding-ru';
 import { KIND_RU, timeAgo } from '../lib/ru';
 
 export function Profile() {
@@ -72,9 +72,11 @@ export function Profile() {
                 {items.map((f) => (
                   <div key={f.id} className="row" style={{ gap: 10, padding: '5px 0', alignItems: 'flex-start' }}>
                     <div className="grow">
-                      <span className="small muted">{f.label ?? f.key}</span>
+                      <span className="small muted">{modelLabelRu(f.key, f.label ?? f.key)}</span>
                       <div className="small" style={{ fontWeight: 560 }}>
-                        {Array.isArray(f.value) ? f.value.join(', ') : typeof f.value === 'object' && f.value ? JSON.stringify(f.value) : String(f.value ?? '—')}
+                        {typeof f.value === 'object' && f.value !== null && !Array.isArray(f.value)
+                          ? JSON.stringify(f.value)
+                          : modelValueRu(f.value)}
                       </div>
                     </div>
                     <Tag tone={f.source === 'ai_inferred' ? 'gold' : f.source === 'system_observed' ? 'violet' : 'green'}>

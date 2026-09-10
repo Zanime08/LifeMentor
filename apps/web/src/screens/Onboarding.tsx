@@ -5,7 +5,7 @@ import type { GoalDraft } from '@lifementor/core';
 import { Btn, Field, I, Spinner, TextArea, TextInput, Tag } from '../components/ui';
 import { userError } from '../lib/errors';
 import { useApp } from '../state/store';
-import { BLOCK_RU, GAP_TYPE_RU, Q_RU, SECTION_RU, optRu } from '../lib/onboarding-ru';
+import { BLOCK_RU, GAP_TYPE_RU, Q_RU, SECTION_RU, modelLabelRu, modelValueRu, optRu } from '../lib/onboarding-ru';
 
 type Stage = 'welcome' | 'questionnaire' | 'analysis' | 'interview' | 'preview' | 'goals';
 
@@ -381,7 +381,7 @@ function Preview({ onDone, toast, mutate }: { onDone: () => void; toast: (t: str
             return (
               <div key={k} className="model-item">
                 <div className="mi-head">
-                  <span>{i.label}</span>
+                  <span>{modelLabelRu(i.key, i.label)}</span>
                   <Tag tone={i.source === 'ai_inferred' ? 'gold' : 'green'}>{i.source === 'ai_inferred' ? 'определено ИИ' : 'от вас'}</Tag>
                   {i.confidence !== 'confirmed' && <Tag tone="outline">уверенность: {i.confidence === 'inferred' ? 'средняя' : 'низкая'}</Tag>}
                   <span style={{ flex: 1 }} />
@@ -389,10 +389,10 @@ function Preview({ onDone, toast, mutate }: { onDone: () => void; toast: (t: str
                 </div>
                 {typeof i.value === 'string' || typeof i.value === 'number' ? (
                   <input className="input" style={{ marginTop: 6, fontWeight: 560 }}
-                    defaultValue={String(i.value)}
+                    defaultValue={modelValueRu(i.value)}
                     onChange={(e) => setEdits((m) => ({ ...m, [k]: e.target.value }))} />
                 ) : (
-                  <div className="mi-value">{Array.isArray(i.value) ? i.value.join(', ') : JSON.stringify(i.value)}</div>
+                  <div className="mi-value">{modelValueRu(i.value)}</div>
                 )}
               </div>
             );

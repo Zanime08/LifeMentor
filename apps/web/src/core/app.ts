@@ -89,12 +89,40 @@ export function bootstrapApp(): Promise<LifeMentorApp> {
       backup: { onFirstLaunch: true },
     };
     const app = await LifeMentorApp.create(options);
+    await initLanguage(app);
     return app;
   })().catch((error) => {
     appPromise = null; // allow retry
     throw error;
   });
   return appPromise;
+}
+
+/**
+ * Decide the language the app speaks to this user, once per installation (req. 6, 7, 20).
+ *
+ * The engine's own defaults are English, which means a Russian user — the whole interface is
+ * Russian — used to get: an English «вот как я вас понял» summary, goal drafts titled
+ * "Learn X to a usable level", and review narratives written in English, because that is the
+ * language handed to the AI and to the onboarding composers. The browser (or the shell) knows the
+ * language of the person in front of it, so it is applied on the first launch; after that the choice
+ * belongs to the user and is only ever changed in Settings.
+ *
+ * Device-local on purpose: it is a statement about *this* device's user, not data to sync.
+ */
+export async function initLanguage(app: LifeMentorApp, browserLanguage = typeof navigator !== 'undefined' ? navigator.language : ''): Promise<string | null> {
+  try {
+    const flags = await app.services.settings.get('flags');
+    const current = await app.services.settings.get('ai');
+    if (flags.language_initialized) return current.language;
+    const language = (browserLanguage || '').toLowerCase().startsWith('ru') ? 'ru' : 'en';
+    await app.services.settings.setMany({ ai: { language }, profile: { locale: language } }, { actor: 'system', sync: false });
+    await app.services.settings.set('flags', { language_initialized: true }, { actor: 'system', sync: false });
+    return language;
+  } catch {
+    // Never block the app on a convenience: the settings keep their defaults.
+    return null;
+  }
 }
 
 /** Force-close the app (used by "reset local data" / account deletion flows). */

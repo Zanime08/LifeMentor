@@ -767,13 +767,17 @@ export function createOnboardingAI(orchestrator: AIOrchestrator): OnboardingAI {
       }));
     },
 
-    async summariseModel(model: { items: unknown[]; assumptions: unknown[]; unknowns: string[] }): Promise<string> {
+    async summariseModel(model: { items: unknown[]; assumptions: unknown[]; unknowns: string[] }): Promise<string | null> {
       const result = await orchestrator.structured(
-        'summarize_day',
+        'memory_review',
         'Write a short summary (max 5 sentences) of this user model for the confirmation screen. State clearly which parts are assumptions that need checking. Never present an assumption as a fact.',
         z.object({ summary: z.string().min(10).max(900) }),
         { tier: 'mid', extra: model, maxTokens: 500 },
       );
+      // Same rule as the review narratives: the offline engine cannot tell a user model from a day
+      // summary — it answered "Today: 0 tasks done, 0m focus…" for this call, in English, on the
+      // screen where the user confirms who they are. A wrong sentence is worse than none.
+      if (result.offline) return null;
       return result.data.summary;
     },
   };

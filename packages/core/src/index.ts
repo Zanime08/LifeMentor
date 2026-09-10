@@ -28,6 +28,9 @@ export {
   type SyncOptions,
 } from './app';
 
+// ── reviews ─────────────────────────────────────────────────────────────
+export type { ReviewItem } from './services/progress';
+
 // ── domain ──────────────────────────────────────────────────────────────
 export * from './domain/types';
 

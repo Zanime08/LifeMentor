@@ -94,6 +94,12 @@ export const FlagSettings = z.object({
   /** The month (YYYY-MM) whose review has been produced (req. 78). */
   last_monthly_review_month: z.string().nullable().default(null),
   last_backup_at: z.string().nullable().default(null),
+  /**
+   * This installation has decided which language to speak to its user (req. 6, 7): the client sets
+   * it from the device language on first launch, and after that only the user changes it. Device-local
+   * state, never synced.
+   */
+  language_initialized: z.boolean().default(false),
 });
 
 export const SETTINGS_GROUPS = {

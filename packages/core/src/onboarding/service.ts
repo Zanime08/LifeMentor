@@ -30,7 +30,13 @@ export interface GoalDraft {
 /** Optional AI assistance. Everything has a deterministic fallback — onboarding never dead-ends. */
 export interface OnboardingAI extends InterviewAI {
   proposeGoals?(answers: AnswersMap, gaps: GapCandidate[]): Promise<GoalDraft[]>;
-  summariseModel?(model: ModelPreview): Promise<string>;
+  /**
+   * `null` means "no wording of your own — the deterministic summary is better". The built-in offline
+   * engine answers every structured request with a generic template (a *day* summary, in English),
+   * and it used to be shown on the confirmation screen as «вот как я вас понял»; only a real model
+   * gets to word this screen now.
+   */
+  summariseModel?(model: ModelPreview): Promise<string | null>;
 }
 
 export interface OnboardingDeps {
@@ -289,11 +295,14 @@ export class OnboardingService {
     const items = buildModelItems(answers, interview);
     const assumptions = items.filter((i) => i.source === 'ai_inferred' || i.confidence !== 'confirmed');
     const unknowns = detectGaps(answers).filter((g) => g.importance >= 0.7).map((g) => g.target);
-    const settingsPreview = settingsFromAnswers(answers);
+    const settingsPreview = settingsFromAnswers(answers, await this.language());
 
-    let summary = heuristicSummary(answers, items);
+    let summary = heuristicSummary(answers, items, await this.language());
     if (this.deps.ai?.summariseModel) {
-      try { summary = await this.deps.ai.summariseModel({ items, assumptions, unknowns, summary, settings_preview: settingsPreview }); } catch { /* keep the deterministic summary */ }
+      try {
+        const aiSummary = await this.deps.ai.summariseModel({ items, assumptions, unknowns, summary, settings_preview: settingsPreview });
+        if (aiSummary) summary = aiSummary;
+      } catch { /* keep the deterministic summary */ }
     }
     return { items, assumptions, unknowns, summary, settings_preview: settingsPreview };
   }
@@ -330,7 +339,7 @@ export class OnboardingService {
     }
 
     await this.deps.profile.setMany(fields, { ...ctx, reason: 'onboarding confirmed' });
-    await this.deps.settings.setMany(settingsFromAnswers(answers) as never, ctx);
+    await this.deps.settings.setMany(settingsFromAnswers(answers, await this.language()) as never, ctx);
 
     // Facts the user stated become long-term memories too (they outlive the onboarding session).
     for (const item of fields.filter((f) => f.source === 'user_provided' && f.confidence === 'confirmed').slice(0, 40)) {
@@ -352,6 +361,16 @@ export class OnboardingService {
     return { fields: fields.length, snapshot_id: snapshot.id };
   }
 
+  /** The language the user reads in: the AI setting, then the profile locale, then English. */
+  private async language(): Promise<string> {
+    try {
+      const all = await this.deps.settings.all();
+      return all.ai.language || all.profile.locale || 'en';
+    } catch {
+      return 'en';
+    }
+  }
+
   // ─────────────────────────── initial goals / skills / knowledge / plan ───────────────────────────
   /** Draft goals derived from what the user actually said — the user confirms each one. */
   async suggestGoals(): Promise<GoalDraft[]> {
@@ -365,7 +384,7 @@ export class OnboardingService {
         this.log.warn('AI goal proposal failed — using heuristic drafts', { error: error instanceof Error ? error.message : String(error) });
       }
     }
-    return heuristicGoals(answers);
+    return heuristicGoals(answers, await this.language());
   }
 
   async createGoals(drafts: GoalDraft[], ctx: WriteContext = USER_WRITE): Promise<{ created: number; ids: string[] }> {
@@ -611,7 +630,7 @@ function guessDomain(skill: string, answers: AnswersMap): string | null {
 }
 
 /** Turn answers into concrete settings groups (applied on confirmation). */
-export function settingsFromAnswers(answers: AnswersMap): Record<string, Record<string, unknown>> {
+export function settingsFromAnswers(answers: AnswersMap, language = 'en'): Record<string, Record<string, unknown>> {
   const style = String(answers.planning_style ?? 'balanced');
   const strictness = Number(answers.strictness ?? 5) / 10;
   const freeHours = Number(answers.free_time_desired ?? 1.5);
@@ -631,7 +650,9 @@ export function settingsFromAnswers(answers: AnswersMap): Record<string, Record<
     },
     learning: { daily_minutes: Math.round(Math.max(0, Math.min(10, available)) * 60 * 0.6) || 45 },
     news: { categories: newsCategoriesFromInterests(splitList(answers.interests)) },
-    ai: { language: 'en' },
+    // The language the client already decided for this user (see the web bootstrap) — onboarding
+    // must not silently switch them to English, which is what a hardcoded 'en' did.
+    ai: { language },
   };
 }
 
@@ -645,34 +666,62 @@ function newsCategoriesFromInterests(interests: string[]): string[] {
   return [...out].slice(0, 6);
 }
 
-function heuristicSummary(answers: AnswersMap, items: ModelPreviewItem[]): string {
+/**
+ * «Вот как я вас понял» — the sentence at the top of the confirmation step (req. 7).
+ *
+ * This is text the *user* reads, not an internal string, so it is written in their language from the
+ * start: the language comes from the settings the client configured for them (the app is Russian for
+ * a Russian user, English otherwise). `items` decides the last sentence — assumptions are called out.
+ */
+function heuristicSummary(answers: AnswersMap, items: ModelPreviewItem[], language = 'en'): string {
   const goals = String(answers.what_you_want ?? '').trim();
   const skills = splitList(answers.skills_want);
   const career = labelsOf(answers.career_direction, 'career_direction');
+  const available = Number(answers.available_hours_per_day ?? 0);
+  const fixed = Number(answers.fixed_hours_per_day ?? 0);
+  const assumptions = items.filter((i) => i.source === 'ai_inferred');
+  const ru = language.toLowerCase().startsWith('ru');
+
   const parts: string[] = [];
+  if (ru) {
+    parts.push(goals ? `Вы хотите: ${goals}.` : 'Главной цели вы пока не назвали — это нормально, уточним по ходу.');
+    if (skills.length) parts.push(`Хотите освоить: ${skills.slice(0, 4).join(', ')}.`);
+    if (career) parts.push(`Направление: ${renderValue(career)}.`);
+    if (available) parts.push(`На это есть ~${available} ч в день, из них ${fixed} ч уже занято.`);
+    if (assumptions.length) parts.push(`Ниже ${assumptions.length} ${pluralRu(assumptions.length, 'пункт — моё предположение', 'пункта — мои предположения', 'пунктов — мои предположения')}: поправьте, если не так.`);
+    return parts.join(' ');
+  }
   parts.push(goals ? `You want: ${goals}.` : 'You have not told me a main goal yet.');
   if (skills.length) parts.push(`You want to master ${skills.slice(0, 4).join(', ')}.`);
   if (career) parts.push(`Direction: ${renderValue(career)}.`);
-  const available = Number(answers.available_hours_per_day ?? 0);
-  const fixed = Number(answers.fixed_hours_per_day ?? 0);
   if (available) parts.push(`You have ~${available}h/day for this, with ${fixed}h already fixed.`);
-  const assumptions = items.filter((i) => i.source === 'ai_inferred');
   if (assumptions.length) parts.push(`${assumptions.length} item(s) below are my assumptions — correct any of them.`);
   return parts.join(' ');
 }
 
+/** Russian plural for the few sentences the engine composes for the user. */
+function pluralRu(n: number, one: string, few: string, many: string): string {
+  const abs = Math.abs(n) % 100;
+  const last = abs % 10;
+  if (abs > 10 && abs < 20) return many;
+  if (last === 1) return one;
+  if (last >= 2 && last <= 4) return few;
+  return many;
+}
+
 /** Deterministic goal drafts from the user's own words (the AI can improve on this). */
-export function heuristicGoals(answers: AnswersMap): GoalDraft[] {
+export function heuristicGoals(answers: AnswersMap, language = 'en'): GoalDraft[] {
   const drafts: GoalDraft[] = [];
   const horizon: Horizon = horizonFromAnswer(String(answers.goal_horizon ?? ''));
   const targetDate = targetDateFor(horizon);
   const raw = String(answers.what_you_want ?? '');
   const clauses = raw.split(/[.;\n]| and then |, and /i).map((s) => s.trim()).filter((s) => s.length > 8);
+  const ru = language.toLowerCase().startsWith('ru');
 
   clauses.slice(0, 4).forEach((clause, index) => {
     drafts.push({
-      title: capitalize(clause.replace(/^(i want to|i want|i need to|i would like to)\s+/i, '')),
-      description: `From onboarding: "${clause}"`,
+      title: capitalize(clause.replace(/^(i want to|i want|i need to|i would like to|хочу|я хочу)\s+/i, '')),
+      description: ru ? `Из знакомства: «${clause}»` : `From onboarding: "${clause}"`,
       horizon,
       priority: index === 0 ? 'P1' : 'P2',
       area: guessArea(clause, answers),
@@ -683,8 +732,9 @@ export function heuristicGoals(answers: AnswersMap): GoalDraft[] {
 
   for (const skill of splitList(answers.skills_want).slice(0, 2)) {
     drafts.push({
-      title: `Learn ${skill} to a usable level`,
-      description: 'From onboarding: skills you want to master',
+      // The goal title is the user's own data — it is created in their language, not in the engine's.
+      title: ru ? `Освоить ${skill} до рабочего уровня` : `Learn ${skill} to a usable level`,
+      description: ru ? 'Из знакомства: навыки, которые вы хотите освоить' : 'From onboarding: skills you want to master',
       horizon: 'medium',
       priority: drafts.length ? 'P2' : 'P1',
       area: guessDomain(skill, answers) ?? 'learning',
@@ -695,15 +745,15 @@ export function heuristicGoals(answers: AnswersMap): GoalDraft[] {
   const avoid = String(answers.what_to_avoid ?? '').trim();
   if (avoid.length > 5) {
     drafts.push({
-      title: `Reduce: ${capitalize(avoid.slice(0, 80))}`,
-      description: 'From onboarding: what you want to avoid',
+      title: ru ? `Сократить: ${capitalize(avoid.slice(0, 80))}` : `Reduce: ${capitalize(avoid.slice(0, 80))}`,
+      description: ru ? 'Из знакомства: то, чего вы хотите избегать' : 'From onboarding: what you want to avoid',
       horizon: 'short', priority: 'P2', area: 'lifestyle', target_date: targetDateFor('short'),
     });
   }
   if (!drafts.length) {
     drafts.push({
-      title: 'Define what I actually want in the next 3 months',
-      description: 'Created because no concrete goal was given during onboarding.',
+      title: ru ? 'Определить, чего я на самом деле хочу в ближайшие 3 месяца' : 'Define what I actually want in the next 3 months',
+      description: ru ? 'Создано потому, что на знакомстве не прозвучало конкретной цели.' : 'Created because no concrete goal was given during onboarding.',
       horizon: 'short', priority: 'P1', area: 'clarity', target_date: targetDateFor('short'),
     });
   }
