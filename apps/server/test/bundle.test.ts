@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { LifeMentorApp, dayKey } from '@lifementor/core';
 
 /**
  * Phase gate for the release bundle (req. 3, 96): the artifact that ships on a Windows machine
@@ -93,6 +94,20 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+/** A real client app on a temp database — no mocks, no in-process shortcuts. */
+async function client(deviceId: string, dir: string): Promise<LifeMentorApp> {
+  return LifeMentorApp.create({
+    driverOptions: { kind: 'node', path: join(dir, `${deviceId}.sqlite`), durability: 'paranoid' },
+    deviceId,
+    deviceName: deviceId,
+    recover: false,
+    maintenance: { enabled: false },
+    auth: { serverUrl: base },
+    sync: { serverUrl: base, autoStart: false },
+    ai: { providers: [{ kind: 'gateway', gateway: { serverUrl: base, deviceId } }], embeddings: 'local' },
+  });
+}
+
 describe('production server bundle', () => {
   it('configures itself on a machine that has never been set up, then serves the API', async () => {
     const health = await waitForHealth();
@@ -128,6 +143,87 @@ describe('production server bundle', () => {
     expect(env).toMatch(/VAPID_PUBLIC_KEY=\S+/);
     expect(env).toMatch(/VAPID_PRIVATE_KEY=\S+/);
   }, 60_000);
+
+  it('carries real user data between two real clients', async () => {
+    // Everything a user actually has: the shipped bundle (no build tree, no node_modules, no keys)
+    // plus two real client apps — the same `LifeMentorApp` that runs on Windows and Android — over
+    // real HTTP. The other integration test drives an in-process server; this one drives the artefact
+    // an end user downloads.
+    const desktop = await client('bundle-desktop', dir);
+    const session = await desktop.services.auth.signUp({ email: `bundle-${Date.now()}@example.com`, password: 'Str0ngPass!23', displayName: 'Bundle User' });
+    expect(session.authenticated).toBe(true);
+
+    const goal = await desktop.services.goals.create({ title: 'Run a half marathon', horizon: 'long', priority: 'P1' });
+    const task = await desktop.services.tasks.create({ title: 'Buy running shoes', estimated_minutes: 45, goal_id: goal.id });
+    await desktop.services.calendar.create({ title: 'Long run', kind: 'training', day: dayKey(new Date()), start: '09:00', end: '10:30' });
+
+    const pushed = await desktop.services.sync!.syncOnce();
+    expect(pushed.errors).toEqual([]);
+    expect(pushed.offline).toBe(false);
+    expect(pushed.applied).toBeGreaterThanOrEqual(3);
+
+    const phone = await client('bundle-phone', dir);
+    await phone.services.auth.signIn({ email: session.email ?? '', password: 'Str0ngPass!23' });
+    const pulled = await phone.services.sync!.syncOnce();
+    expect(pulled.errors).toEqual([]);
+    expect(pulled.pulled).toBeGreaterThanOrEqual(3);
+    expect((await phone.services.tasks.get(task.id))?.title).toBe('Buy running shoes');
+    expect((await phone.services.goals.get(goal.id))?.title).toBe('Run a half marathon');
+    expect((await phone.services.tasks.get(task.id))?.sync_state).toBe('synchronized');
+
+    // The server's own database agrees, and is still intact after the traffic (req. 94).
+    const health = (await (await fetch(`${base}/v1/health`)).json()) as { integrity: { ok: boolean } };
+    expect(health.integrity.ok).toBe(true);
+
+    await desktop.close();
+    await phone.close();
+  }, 120_000);
+
+  it('answers through the AI gateway although this machine has no provider key (req. 20, 58)', async () => {
+    const client_ = await client('bundle-ai', dir);
+    const session = await client_.services.auth.signUp({ email: `bundle-ai-${Date.now()}@example.com`, password: 'Str0ngPass!23', displayName: 'AI User' });
+
+    // The client holds no key of any kind: its only AI transport is the gateway (the other providers
+    // are not even constructed in the shipping client).
+    expect(client_.ai.provider.id).toBe('gateway');
+    expect(JSON.stringify(await client_.repos.db.all('SELECT * FROM settings'))).not.toMatch(/sk-|AIza/);
+
+    // The mentor answers, and the answer is a real one — the server's heuristic engine stands in for
+    // the model exactly as it does on an installation without keys (the `local-heuristic` provider).
+    const turn = await client_.ai.mentor.chat('What should I focus on this week?', {});
+    expect(turn.reply.length).toBeGreaterThan(10);
+    expect(turn.conversationId).toBeTruthy();
+
+    // The tools the model asks for run on the client, against the client's own SQLite — the model
+    // never touches the user's data directly (req. 24, 25). Whatever the gateway decides to call, the
+    // work happens here and the result is real.
+    const tomorrow = dayKey(new Date(Date.now() + 86_400_000));
+    const created = await client_.ai.mentor.chat('Add a task: прочитать главу 3, 30 minutes, tomorrow', {});
+    expect(created.reply.length).toBeGreaterThan(0);
+    expect(created.toolCalls.length, 'модель должна была вызвать инструмент').toBeGreaterThan(0);
+    expect(created.toolCalls.every((call) => call.outcome.ok)).toBe(true);
+    const tasks = await client_.services.tasks.listForDay(tomorrow);
+    expect(tasks.some((task) => /главу 3/i.test(task.title))).toBe(true);
+
+    // The client's schema has no place to keep AI usage at all: accounting belongs to the server,
+    // and the request the server logged contains counters, not the user's words.
+    const tables = await client_.repos.db.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'");
+    expect(tables.some((table) => table.name === 'ai_usage'), 'клиент не хранит учёт ИИ у себя').toBe(false);
+
+    // Both turns really went through the server: it counted them and named the engine that answered.
+    const usage = await fetch(`${base}/v1/ai/usage`, { headers: { authorization: `Bearer ${await client_.services.auth.accessToken()}` } });
+    expect(usage.status).toBe(200);
+    const body = (await usage.json()) as { requests?: number; tokens?: number; provider?: string };
+    expect(body.requests, 'сервер должен был учесть оба обращения').toBeGreaterThanOrEqual(2);
+    // This machine has no provider key, so the gateway answers with the engine inside the server —
+    // the honest degradation a real installation gets, not an error page.
+    expect(body.provider).toBe('local-heuristic');
+    expect(JSON.stringify(body)).not.toContain('this week');
+    expect(JSON.stringify(body)).not.toContain('главу 3');
+    expect(session.userId).toBeTruthy();
+
+    await client_.close();
+  }, 120_000);
 
   it('keeps the identity across a restart (sessions survive, no second .env)', async () => {
     const envFile = join(workDir, '.env');
