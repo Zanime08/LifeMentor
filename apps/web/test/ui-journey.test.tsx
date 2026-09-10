@@ -411,6 +411,17 @@ describe('first run in the browser client (dom, real engine)', () => {
     }, { timeout: 20_000 });
     expect((await screen.findAllByText(/Выбрал другое направление/, {}, { timeout: 20_000 })).length).toBeGreaterThan(0);
 
+    // ── The connectivity audit speaks Russian too (req. 45): the engine's warnings are
+    //    English internal strings, the screen words them from their codes.
+    const engineWarnings = (await openApp()!.services.strategy.audit()).flatMap((level) => level.warning_items ?? []);
+    expect(engineWarnings.length, 'лестница заполнена не полностью — движку есть что сказать').toBeGreaterThan(0);
+    const page = document.querySelector('.content')?.textContent ?? '';
+    expect(page).not.toMatch(/No active [a-z0-9-]+ direction|None of these are linked|have no [a-z0-9-]+ direction above/);
+    const auditCard = await screen.findByText('Проверка связности', {}, { timeout: 20_000 });
+    const auditText = (auditCard.closest('.card') as HTMLElement).textContent ?? '';
+    expect(auditText).toMatch(/На горизонте «.+» пока нет ни одного направления|не связано с целью|нет направления выше/);
+    expect(auditText).not.toMatch(/direction|linked to a goal/);
+
     // ── The option comparison answers with reasoning, never with a promise ───────
     const firstOption = screen.getAllByPlaceholderText('Например: фриланс на 10 ч/нед')[0];
     await user.type(firstOption, 'Фриланс по 10 часов в неделю');

@@ -569,6 +569,35 @@ function PrivacyTab() {
 }
 
 /* ── diagnostics ────────────────────────────────────────────────────── */
+const SEVERITY_RU: Record<string, string> = { info: 'к сведению', warning: 'внимание', critical: 'критично' };
+
+/**
+ * Russian wording for a recovery issue (req. 13). Built from the kind and the data; the engine's own
+ * `message` is an internal English string ("3 orphan row(s) were removed…").
+ */
+function recoveryIssueText(issue: RecoveryReport['issues'][number]): string | null {
+  const data = (issue.data ?? {}) as Record<string, unknown>;
+  const count = Number((data.taskIds as unknown[] | undefined)?.length ?? data.count ?? 0) || 0;
+  switch (issue.kind) {
+    case 'integrity':
+      return 'Проверка целостности базы нашла проблемы. Копия повреждённых строк сохранена в журнале изменений.';
+    case 'orphan':
+      return 'Найдены строки без владельца (осиротевшие связи). Они убраны из базы, их содержимое сохранено в журнале изменений.';
+    case 'schema':
+      return 'Версия схемы базы не совпадает с версией приложения. Обновите приложение или восстановите копию.';
+    case 'stale_task':
+      return count > 0
+        ? `${count} ${count === 1 ? 'задача осталась' : 'задач осталось'} в работе с прошлого запуска — отметьте, выполнены ли они.`
+        : 'Остались задачи в работе с прошлого запуска — отметьте, выполнены ли они.';
+    case 'sync':
+      return 'Часть изменений синхронизации ждёт отправки. Проверьте состояние в разделе «Аккаунт и синхронизация».';
+    case 'snapshot':
+      return 'Не удалось создать снепшот дня — он появится при следующем запуске.';
+    default:
+      return null;
+  }
+}
+
 /**
  * The startup recovery sequence (req. 13) used to vanish into the console: the engine repaired what
  * it could, reported leftovers — «these tasks were still in progress when the app closed, did you
@@ -592,6 +621,9 @@ function RecoveryCard() {
       setRunning(false);
     }
   };
+  // The engine's `message` is English (the AI and the log read it) — the card words it from the
+  // issue kind and the numbers, and drops anything it cannot word rather than printing English.
+  const issueLines = report?.issues.filter((issue) => !!recoveryIssueText(issue)) ?? [];
   const tone = (status: RecoveryReport['actions'][number]['status']) =>
     status === 'ok' ? 'green' : status === 'repaired' ? 'gold' : status === 'failed' ? 'danger' : 'outline';
   const issueTone = (severity: RecoveryReport['issues'][number]['severity']) =>
@@ -622,13 +654,13 @@ function RecoveryCard() {
               <span className="xsmall muted grow">{a.detail}</span>
             </div>
           ))}
-          {report.issues.length > 0 && (
+          {issueLines.length > 0 && (
             <>
               <div className="section-title">Что требует внимания</div>
-              {report.issues.map((issue, i) => (
+              {issueLines.map((issue, i) => (
                 <div className="row wrap" key={`issue-${i}`} style={{ gap: 8, padding: '3px 0' }}>
-                  <Tag tone={issueTone(issue.severity)}>{issue.severity}</Tag>
-                  <span className="small grow">{issue.message}</span>
+                  <Tag tone={issueTone(issue.severity)}>{SEVERITY_RU[issue.severity]}</Tag>
+                  <span className="small grow">{recoveryIssueText(issue)}</span>
                 </div>
               ))}
             </>

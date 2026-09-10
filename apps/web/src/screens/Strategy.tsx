@@ -3,6 +3,7 @@ import type { StrategyChange, StrategyItem, StrategyHorizon } from '@lifementor/
 import { Btn, Card, Empty, Field, Modal, PageHead, Select, Spinner, Tag, TextArea, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
 import { fmtDay, timeAgo } from '../lib/ru';
+import { HORIZON_LABEL, auditWarningText } from '../lib/strategy-ru';
 
 /**
  * Strategy screen (req. 45, 46, 79–81).
@@ -18,16 +19,6 @@ import { fmtDay, timeAgo } from '../lib/ru';
  *    scores each option against the user's *own* stated time, capital and risk tolerance, and says
  *    in words why. It never claims an option is objectively better and never promises income.
  */
-
-const HORIZON_LABEL: Record<StrategyHorizon, string> = {
-  '3-5y': '3–5 лет',
-  '1y': 'Год',
-  '3mo': '3 месяца',
-  '1mo': 'Месяц',
-  '1w': 'Неделя',
-  today: 'Сегодня',
-  now: 'Сейчас',
-};
 
 const HORIZON_HINT: Record<StrategyHorizon, string> = {
   '3-5y': 'Кем/чем вы хотите быть через несколько лет — направление, не обещание.',
@@ -65,7 +56,7 @@ export function Strategy() {
   const { app, version, mutate, toast, toastError } = useApp();
   const [ladder, setLadder] = useState<{ horizon: StrategyHorizon; items: StrategyItem[] }[] | null>(null);
   const [changes, setChanges] = useState<StrategyChange[]>([]);
-  const [audit, setAudit] = useState<{ horizon: StrategyHorizon; items: number; unlinked: number; warnings: string[] }[]>([]);
+  const [audit, setAudit] = useState<Awaited<ReturnType<import('@lifementor/core').StrategyService['audit']>>>([]);
   const [adding, setAdding] = useState<StrategyHorizon | null>(null);
   const [draft, setDraft] = useState({ title: '', description: '' });
   const [dropping, setDropping] = useState<StrategyItem | null>(null);
@@ -145,7 +136,11 @@ export function Strategy() {
 
   if (!ladder) return <Spinner label="Собираю лестницу горизонтов…" />;
 
-  const warnings = audit.flatMap((level) => level.warnings.map((w) => ({ horizon: level.horizon, text: w })));
+  // The engine's own sentences are English (they are what the AI and the export read); the screen
+  // words each warning from its code, and a warning it cannot word is not shown at all.
+  const warnings = audit.flatMap((level) => (level.warning_items ?? [])
+    .map((item) => ({ horizon: level.horizon, text: auditWarningText(item) }))
+    .filter((w): w is { horizon: StrategyHorizon; text: string } => !!w.text));
 
   return (
     <div className="stack">

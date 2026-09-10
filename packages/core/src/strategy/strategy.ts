@@ -7,6 +7,7 @@ import type { GoalService } from '../services/goals';
 import { newId } from '../util/id';
 import { nowIso } from '../util/time';
 import { AppError } from '../util/result';
+import type { ReviewItem } from '../services/progress';
 
 export const HORIZONS: StrategyHorizon[] = ['3-5y', '1y', '3mo', '1mo', '1w', 'today', 'now'];
 export const HORIZON_PARENT: Record<StrategyHorizon, StrategyHorizon | null> = {
@@ -165,20 +166,29 @@ export class StrategyService {
   }
 
   /** Check the ladder is coherent: every horizon should point at something real. */
-  async audit(): Promise<{ horizon: StrategyHorizon; items: number; unlinked: number; warnings: string[] }[]> {
-    const out: { horizon: StrategyHorizon; items: number; unlinked: number; warnings: string[] }[] = [];
+  /**
+   * Connectivity audit (req. 45): is the ladder actually connected, or a pile of unrelated wishes?
+   *
+   * Each warning carries a code and the numbers behind it; the English sentence stays for the AI and
+   * the export, while the interface words it for the person reading the screen (`strategy-audit-ru.ts`
+   * in the client). A missing link is advice, not an error — nothing is blocked by it.
+   */
+  async audit(): Promise<{ horizon: StrategyHorizon; items: number; unlinked: number; warnings: string[]; warning_items: ReviewItem[] }[]> {
+    const out: { horizon: StrategyHorizon; items: number; unlinked: number; warnings: string[]; warning_items: ReviewItem[] }[] = [];
     for (const horizon of HORIZONS) {
       const items = await this.repos.strategyItems.find({ horizon, status: 'active' }, { limit: 100 });
       const unlinked = items.filter((i) => !i.goal_id).length;
       const warnings: string[] = [];
-      if (!items.length) warnings.push(`No active ${horizon} direction.`);
-      if (unlinked === items.length && items.length > 0) warnings.push('None of these are linked to a goal — they cannot be traced to today\'s actions.');
+      const warningItems: ReviewItem[] = [];
+      const warn = (text: string, item: ReviewItem): void => { warnings.push(text); warningItems.push(item); };
+      if (!items.length) warn(`No active ${horizon} direction.`, { code: 'no_direction', params: { horizon } });
+      if (unlinked === items.length && items.length > 0) warn('None of these are linked to a goal — they cannot be traced to today\'s actions.', { code: 'none_linked', params: { horizon, count: items.length } });
       const parentHorizon = HORIZON_PARENT[horizon];
       if (parentHorizon) {
         const parentItems = await this.repos.strategyItems.find({ horizon: parentHorizon, status: 'active' }, { limit: 100 });
-        if (!parentItems.length && items.length) warnings.push(`These ${horizon} items have no ${parentHorizon} direction above them.`);
+        if (!parentItems.length && items.length) warn(`These ${horizon} items have no ${parentHorizon} direction above them.`, { code: 'no_parent', params: { horizon, parent: parentHorizon, count: items.length } });
       }
-      out.push({ horizon, items: items.length, unlinked, warnings });
+      out.push({ horizon, items: items.length, unlinked, warnings, warning_items: warningItems });
     }
     return out;
   }
