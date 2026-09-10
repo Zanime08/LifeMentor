@@ -26,6 +26,7 @@ import { StrategyService } from './strategy/strategy';
 import { HttpSyncTransport, SyncEngine, type SyncEvent, type SyncTransport } from './services/sync';
 import { BackupService, type BackupStorage } from './services/backup';
 import { RecoveryService, type RecoveryReport } from './services/recovery';
+import type { NarrativeGenerator } from './services/progress';
 import { AuthService, HttpAuthTransport, type AuthTransport } from './services/auth';
 import { NodeBackupStorage, WebBackupStorage } from './platform/storage';
 import { PlannerService } from './planning/planner';
@@ -42,8 +43,29 @@ import { hashEmbed } from './ai/providers/local';
 import { addGlobalSink, createLogger, setLogLevel, type Logger, type LogLevel, type LogSink } from './util/logging';
 import { newId } from './util/id';
 import { AppError } from './util/result';
-import { dayKey, nowIso } from './util/time';
+import { addDays, dayKey, nowIso, startOfMonth, startOfWeek } from './util/time';
 const log = createLogger('app');
+
+/** After this local hour, today's snapshot counts as "end of day" (req. 11). */
+const END_OF_DAY_HOUR = 21;
+/** At most one automatic backup per day (req. 16). */
+const BACKUP_INTERVAL_MS = 20 * 60 * 60 * 1000;
+/** How often an open app re-checks whether the day/week/month has turned over. */
+const MAINTENANCE_INTERVAL_MS = 30 * 60 * 1000;
+
+/** What one maintenance pass did (req. 11, 16, 70, 77, 78). */
+export interface DailyMaintenanceReport {
+  day: string;
+  /** Snapshots created for days missed while the app was closed. */
+  backfilled: string[];
+  snapshot: boolean;
+  weekly: boolean;
+  monthly: boolean;
+  pruned: number;
+  backup: boolean;
+  /** Steps that failed. The app keeps working; the user can see what did not run. */
+  failed: { step: string; message: string }[];
+}
 
 /**
  * LifeMentorApp — the composition root (req. 3, 90).
@@ -107,6 +129,11 @@ export interface LifeMentorOptions {
   auth?: AuthOptions;
   /** Recovery runs automatically during bootstrap; disable for a read-only open. */
   recover?: boolean;
+  /**
+   * Time-driven housekeeping (req. 11, 16, 77, 78): end-of-day snapshot, weekly/monthly reviews,
+   * retention, daily backup. On by default — the user must not have to press a button for these.
+   */
+  maintenance?: { enabled?: boolean; intervalMs?: number };
 }
 
 export interface AppServices {
@@ -172,7 +199,12 @@ export class LifeMentorApp {
   readonly ai: AppAI;
   /** Result of the startup recovery sequence (null when bootstrap/recovery was skipped). */
   recoveryReport: RecoveryReport | null = null;
+  /** What the last maintenance pass did — shown in diagnostics, never hidden (req. 96). */
+  lastMaintenanceReport: DailyMaintenanceReport | null = null;
   private networkUnsubscribe: (() => void) | null = null;
+  private maintenanceTimer: ReturnType<typeof setInterval> | null = null;
+  private lastMaintenanceAt: string | null = null;
+  private maintenanceFirstPass: Promise<DailyMaintenanceReport | null> = Promise.resolve(null);
 
   private constructor(
     db: Database,
@@ -181,6 +213,7 @@ export class LifeMentorApp {
     platform: PlatformAdapter,
     services: AppServices,
     ai: AppAI,
+    maintenance: { enabled?: boolean; intervalMs?: number } = {},
   ) {
     this.db = db;
     this.repos = repos;
@@ -189,7 +222,11 @@ export class LifeMentorApp {
     this.logger = log;
     this.services = services;
     this.ai = ai;
+    this.maintenanceOptions = maintenance;
   }
+
+  /** Time-driven housekeeping settings from `LifeMentorOptions.maintenance` (req. 11, 77, 78). */
+  private readonly maintenanceOptions: { enabled?: boolean; intervalMs?: number };
 
   /** Start periodic sync and reconnect handling. Called automatically when sync is configured. */
   enableSync(engine: SyncEngine, intervalMs = 5 * 60_000): void {
@@ -304,7 +341,7 @@ export class LifeMentorApp {
 
     const mentor = new MentorService({
       orchestrator, tasks, goals, calendar, learning, progress, notifications,
-      news, projects, profile, memory, planner, settings, deviceId,
+      news, projects, profile, memory, planner, settings, deviceId, weeklyReviews,
     });
 
     // ── backup / recovery / auth / sync ─────────────────────────────────
@@ -351,7 +388,7 @@ export class LifeMentorApp {
     }, {
       provider, tools, context, conversations, orchestrator, mentor,
       embedder, isOffline: provider.id.startsWith('local'),
-    });
+    }, options.maintenance ?? {});
 
     if (options.bootstrap !== false) {
       await app.bootstrap(options.deviceName, { recover: options.recover !== false, firstLaunchBackup: options.backup?.onFirstLaunch });
@@ -392,10 +429,20 @@ export class LifeMentorApp {
       if (!this.recoveryReport.ok) log.error('startup recovery reported critical problems', { issues: this.recoveryReport.issues });
     }
 
-    if (firstLaunch && options.firstLaunchBackup !== false) {
+    // The baseline protects a database that already holds something (an upgrade that opens an
+    // existing file). A brand-new install has nothing to protect: an empty image is junk, and it
+    // would also mark the day as "already backed up" and swallow the first real one.
+    if (firstLaunch && options.firstLaunchBackup !== false && (await this.hasUserData())) {
       await this.services.backup.createBackup('auto', 'first launch baseline').catch((error) => {
         log.warn('first-launch backup failed', { error: error instanceof Error ? error.message : String(error) });
       });
+    }
+
+    // Time-driven work: the end-of-day snapshot and the weekly/monthly reviews must appear on their
+    // own (req. 11, 77, 78). This never blocks the first screen and never fails the startup —
+    // every step reports its own errors inside the maintenance report.
+    if (this.maintenanceOptions.enabled !== false) {
+      this.startMaintenance(this.maintenanceOptions.intervalMs ?? MAINTENANCE_INTERVAL_MS);
     }
 
     log.info('app ready', { deviceId: this.deviceId, firstLaunch, provider: this.ai.provider.id, sync: Boolean(this.services.sync) });
@@ -424,6 +471,12 @@ export class LifeMentorApp {
     };
   }
 
+  /** True once the database holds anything the user would mind losing. */
+  private async hasUserData(): Promise<boolean> {
+    const counts = await this.counts();
+    return Object.values(counts).some((n) => n > 0);
+  }
+
   private async counts(): Promise<Record<string, number>> {
     const tables = ['goals', 'tasks', 'calendar_events', 'projects', 'skills', 'learning_paths', 'memories', 'news_items', 'notifications', 'conversations'];
     const out: Record<string, number> = {};
@@ -438,56 +491,167 @@ export class LifeMentorApp {
     return out;
   }
 
-  /** End-of-day housekeeping: snapshot, reviews when due, memory pruning, WAL checkpoint. */
-  async dailyMaintenance(now = new Date()): Promise<{ snapshot: boolean; weekly: boolean; monthly: boolean; pruned: number }> {
+  /**
+   * Daily maintenance (req. 11, 16, 70, 77, 78, 96) — the one place where time-driven work happens.
+   *
+   * It runs at every launch and then periodically while the app stays open (`startMaintenance`),
+   * so a machine that is never closed at the right moment still gets its end-of-day snapshot and
+   * its weekly/monthly review. Every step is guarded by a flag or by an existence check, so calling
+   * it a hundred times a day is a no-op after the first — no duplicated reviews, no backup spam.
+   *
+   * Semantics that matter:
+   *  • the snapshot of a day is taken when that day is over (late evening, or on the next launch
+   *    for a machine that was switched off) — never as an empty morning stub;
+   *  • the weekly review covers the **previous, completed** week, the monthly review the
+   *    **previous, completed** month — reviewing the week that just started says nothing;
+   *  • days/weeks/months without activity are not recorded at all;
+   *  • a failure in any single step is reported, never fatal: the app must still open.
+   */
+  async dailyMaintenance(now = new Date()): Promise<DailyMaintenanceReport> {
     const day = dayKey(now);
     const flags = await this.services.settings.all();
     const write = { actor: 'system' as const, deviceId: this.deviceId };
+    // "When did this device last do X" markers are operational bookkeeping, not user data: sending
+    // them through sync would make a second device skip its own evening snapshot and would leave
+    // permanent junk in the change feed. Only content (snapshots, reviews) synchronises.
+    const flagWrite = { ...write, sync: false as const };
+    // Read once, up front: whether there is anything to protect is decided by the state at the
+    // start of the pass, not by whatever arrives while the pass is running (a fresh install must
+    // not race its own first keystroke into an "automatic backup" of an empty database).
+    const hasData = await this.hasUserData();
+    const report: DailyMaintenanceReport = {
+      day, backfilled: [], snapshot: false, weekly: false, monthly: false, pruned: 0, backup: false, failed: [],
+    };
 
-    let snapshot = false;
-    if (flags.flags.last_daily_snapshot_day !== day) {
-      await this.services.snapshots.create(day, write);
-      await this.services.settings.setState('last_daily_snapshot_day', day);
-      snapshot = true;
-    }
+    // 1. Snapshots: fill in days missed while the app was closed (req. 11, 13).
+    await this.step(report, 'snapshots.backfill', async () => {
+      const result = await this.services.snapshots.ensureUpToDate(write, { now });
+      report.backfilled = result.created;
+    });
 
-    let weekly = false;
-    const weekStart = weekStartOf(now);
-    if (flags.flags.last_weekly_review_week !== weekStart) {
-      await this.services.weeklyReviews.create(weekStart, write);
-      await this.services.settings.setState('last_weekly_review_week', weekStart);
-      weekly = true;
-    }
-
-    let monthly = false;
-    const month = day.slice(0, 7);
-    if (flags.flags.last_monthly_review_month !== month) {
-      await this.services.monthlyReviews.create(month, write);
-      await this.services.settings.setState('last_monthly_review_month', month);
-      monthly = true;
-    }
-
-    let pruned = 0;
-    const retention = flags.privacy.memory_retention_days;
-    if (retention) pruned += await this.services.memory.prune(retention, { keepConfirmed: true });
-    pruned += await this.services.personalization.prune(120);
-    pruned += await this.services.news.prune(30);
-    pruned += await this.services.notifications.pruneDelivered(30);
-
-    if (snapshot) {
-      await this.services.backup.createBackup('auto', `daily ${day}`).catch((error) => {
-        log.warn('daily backup failed', { error: error instanceof Error ? error.message : String(error) });
+    // 2. End of day: snapshot today once the day is really ending (req. 11).
+    if (now.getHours() >= END_OF_DAY_HOUR && flags.flags.last_daily_snapshot_day !== day) {
+      await this.step(report, 'snapshot.today', async () => {
+        const snapshot = await this.services.snapshots.createIfActive(day, write);
+        if (snapshot) {
+          await this.services.settings.set('flags', { last_daily_snapshot_day: day }, flagWrite);
+          report.snapshot = true;
+        }
       });
-      await this.services.backup.rotate();
     }
 
-    await this.db.checkpoint();
-    return { snapshot, weekly, monthly, pruned };
+    // 3. Weekly review of the previous, completed week (req. 77).
+    const previousWeek = dayKey(addDays(startOfWeek(now), -7));
+    if (flags.flags.last_weekly_review_week !== previousWeek) {
+      await this.step(report, 'review.weekly', async () => {
+        if (!(await this.services.weeklyReviews.weekHadActivity(previousWeek))) return;
+        if (await this.services.weeklyReviews.forWeek(previousWeek)) {
+          await this.services.settings.set('flags', { last_weekly_review_week: previousWeek }, flagWrite);
+          return;
+        }
+        await this.services.weeklyReviews.create(previousWeek, write);
+        report.weekly = true;
+      });
+    }
+
+    // 4. Monthly review of the previous, completed month (req. 78).
+    // The month before the current one: last day of the previous month, then its first day.
+    const previousMonth = dayKey(startOfMonth(addDays(startOfMonth(now), -1))).slice(0, 7);
+    if (flags.flags.last_monthly_review_month !== previousMonth) {
+      await this.step(report, 'review.monthly', async () => {
+        if (!(await this.services.monthlyReviews.monthHadActivity(previousMonth))) return;
+        if (await this.services.monthlyReviews.forMonth(previousMonth)) {
+          await this.services.settings.set('flags', { last_monthly_review_month: previousMonth }, flagWrite);
+          return;
+        }
+        await this.services.monthlyReviews.create(previousMonth, write);
+        report.monthly = true;
+      });
+    }
+
+    // 5. Retention (req. 70): the user's own setting decides, nothing is deleted behind their back.
+    await this.step(report, 'prune', async () => {
+      let pruned = 0;
+      const retention = flags.privacy.memory_retention_days;
+      // Confirmed memories are facts the user owns; they are only dropped by an explicit delete.
+      if (retention) pruned += await this.services.memory.prune(retention, { keepConfirmed: true });
+      pruned += await this.services.personalization.prune(120);
+      pruned += await this.services.news.prune(30);
+      pruned += await this.services.notifications.pruneDelivered(30);
+      report.pruned = pruned;
+    });
+
+    // 6. One backup a day (req. 16), then trim to 7 daily / 4 weekly / 3 monthly. A brand-new
+    // install has nothing to protect yet: an empty database image is junk, not a safety net — it
+    // appears at the first pass that finds real content.
+    if (hasData && this.shouldTakeDailyBackup(flags.flags.last_backup_at, now)) {
+      await this.step(report, 'backup', async () => {
+        await this.services.backup.createBackup('auto', `daily ${day}`);
+        await this.services.backup.rotate();
+        report.backup = true;
+      });
+    }
+
+    await this.step(report, 'checkpoint', async () => { await this.db.checkpoint(); });
+    this.lastMaintenanceAt = nowIso();
+    this.lastMaintenanceReport = report;
+    log.info('daily maintenance finished', { ...report });
+    return report;
   }
+
+  private shouldTakeDailyBackup(lastBackupAt: string | null, now: Date): boolean {
+    if (!lastBackupAt) return true;
+    const last = new Date(lastBackupAt).getTime();
+    if (Number.isNaN(last)) return true;
+    return now.getTime() - last >= BACKUP_INTERVAL_MS;
+  }
+
+  /** Run one maintenance step; a failure is recorded in the report and never breaks the caller. */
+  private async step(report: DailyMaintenanceReport, name: string, fn: () => Promise<void>): Promise<void> {
+    try {
+      await fn();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      report.failed.push({ step: name, message });
+      log.warn('maintenance step failed', { step: name, error: message });
+    }
+  }
+
+  /**
+   * Keep time-driven work running while the app stays open (a desktop session that lives for days,
+   * a phone that is never fully closed). The timer only *checks*: each step inside
+   * `dailyMaintenance()` decides for itself whether the day/week/month has turned over.
+   */
+  startMaintenance(intervalMs = MAINTENANCE_INTERVAL_MS, now = new Date()): void {
+    this.stopMaintenance();
+    this.maintenanceFirstPass = this.dailyMaintenance(now).catch(() => null);
+    const timer = setInterval(() => { void this.dailyMaintenance().catch(() => undefined); }, intervalMs);
+    // Never keep a process (or a test runner) alive just for housekeeping.
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this.maintenanceTimer = timer as unknown as ReturnType<typeof setInterval>;
+  }
+
+  /**
+   * The first maintenance pass started by bootstrap. The app does not wait for it before showing
+   * the first screen (opening must stay fast), but `close()` does, and diagnostics can.
+   */
+  get maintenanceReady(): Promise<DailyMaintenanceReport | null> { return this.maintenanceFirstPass; }
+
+  stopMaintenance(): void {
+    if (this.maintenanceTimer) clearInterval(this.maintenanceTimer);
+    this.maintenanceTimer = null;
+  }
+
+  /** When maintenance last ran (diagnostics; null before the first pass). */
+  get maintenanceRanAt(): string | null { return this.lastMaintenanceAt; }
 
   /** Flush everything to durable storage and close the driver. */
   async close(): Promise<void> {
     try {
+      this.stopMaintenance();
+      // A pass that already started must finish against a live connection, or its work would be
+      // half-written; each step is idempotent, so waiting is always safe.
+      await this.maintenanceFirstPass.catch(() => undefined);
       this.services.sync?.stop();
       this.networkUnsubscribe?.();
       this.networkUnsubscribe = null;
@@ -528,12 +692,18 @@ function buildEmbedder(mode: 'provider' | 'local' | 'none', provider: AIProvider
   };
 }
 
-function narrativeFrom(orchestrator: AIOrchestrator, settings: SettingsService) {
-  return async ({ kind, data }: { kind: 'daily' | 'weekly' | 'monthly'; data: Record<string, unknown> }): Promise<string> => {
+function narrativeFrom(orchestrator: AIOrchestrator, settings: SettingsService): NarrativeGenerator {
+  return async ({ kind, data }) => {
     const all = await settings.all();
     const intent = kind === 'daily' ? 'summarize_day' : kind === 'weekly' ? 'summarize_week' : 'summarize_month';
     const result = await orchestrator.structured(intent, `Summarise this ${kind} review for the user in ${all.ai.language}. Use only the numbers provided. No praise inflation, no invented facts.`, z.object({ summary: z.string().min(1).max(800) }), { tier: 'mid', extra: data, maxTokens: 400 });
-    return result.data.summary;
+    // The built-in offline engine answers with a generic template that cannot tell which period it
+    // is describing (it produced "Today: 0 tasks done" for a snapshot of yesterday). A wrong
+    // sentence is worse than no sentence: fall through to the service's own text, which is built
+    // from the real numbers of the real day/week/month. A real model words it better — and only
+    // then do we use its wording.
+    if (result.offline) return null;
+    return result.data.summary || null;
   };
 }
 

@@ -4,7 +4,7 @@ import type { TaskService } from '../services/tasks';
 import type { GoalService } from '../services/goals';
 import type { CalendarService } from '../services/calendar';
 import type { LearningService } from '../services/learning';
-import type { ProgressService, NarrativeGenerator } from '../services/progress';
+import type { ProgressService, NarrativeGenerator, WeeklyReviewService } from '../services/progress';
 import type { NotificationService } from '../services/notifications';
 import type { SettingsService } from '../services/settings';
 import type { NewsService } from '../services/news';
@@ -52,6 +52,8 @@ export interface MentorDeps {
   planner: PlannerService;
   settings: SettingsService;
   deviceId: string;
+  /** Optional: lets the proactive pass check whether the previous week already has a review. */
+  weeklyReviews?: WeeklyReviewService;
 }
 
 export interface MentorTrigger {
@@ -340,15 +342,20 @@ export class MentorService {
       }
     }
 
-    // 10. Weekly review is due.
-    const week = dayKey(startOfWeek(now));
-    if (settings.flags.last_weekly_review_week !== week && (now.getDay() === 0 || now.getDay() === 1)) {
+    // 10. Weekly review is due. The subject is the week that just ENDED, because a review of a week
+    //     that started this morning has nothing to look at; maintenance produces it automatically a
+    //     day later, so this trigger only speaks up when that has not happened yet.
+    const previousWeek = dayKey(addDays(startOfWeek(now), -7));
+    const reviewedWeek = this.deps.weeklyReviews
+      ? Boolean(await this.deps.weeklyReviews.forWeek(previousWeek))
+      : settings.flags.last_weekly_review_week === previousWeek;
+    if (!reviewedWeek && (now.getDay() === 0 || now.getDay() === 1)) {
       triggers.push({
-        id: `weekly_review_${week}`, type: 'goal_review', importance: 0.55,
+        id: `weekly_review_${previousWeek}`, type: 'goal_review', importance: 0.55,
         title: ru(lang) ? 'Время недельного разбора' : 'Time for the weekly review',
         body: ru(lang)
-          ? 'Посмотрим, что сработало на этой неделе, а что мешало, и скорректируем цели.'
-          : 'Let us look at what worked this week, what got in the way, and adjust the goals.',
+          ? 'Посмотрим, что сработало на прошедшей неделе, а что мешало, и скорректируем цели.'
+          : 'Let us look at what worked last week, what got in the way, and adjust the goals.',
         reason: 'weekly_review_due',
       });
     }

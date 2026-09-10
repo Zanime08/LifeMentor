@@ -85,8 +85,13 @@ export const FlagSettings = z.object({
   onboarding_completed: z.boolean().default(false),
   user_model_confirmed: z.boolean().default(false),
   first_plan_generated: z.boolean().default(false),
+  /** Day whose *end-of-day* snapshot has been taken (req. 11). */
   last_daily_snapshot_day: z.string().nullable().default(null),
+  /** Day on which startup last checked for missed daily snapshots — not "snapshot taken". */
+  last_snapshot_check_day: z.string().nullable().default(null),
+  /** The week (Monday) whose review has been produced, automatic or manual (req. 77). */
   last_weekly_review_week: z.string().nullable().default(null),
+  /** The month (YYYY-MM) whose review has been produced (req. 78). */
   last_monthly_review_month: z.string().nullable().default(null),
   last_backup_at: z.string().nullable().default(null),
 });

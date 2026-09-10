@@ -23,16 +23,16 @@ that exposes it is tracked separately, because a service without a screen is not
 | 10 | Daily planner + adaptive rescheduling + strict mode + free time | ✅ done — service + Today screen (day plan, energy, strict-mode reasons) |
 | 11 | AI Orchestrator + providers + tools + Context Engine | ✅ done (14 tests) + Mentor chat screen over the server gateway |
 | 12 | Learning engine + spaced repetition + skills + assessments | ✅ done — service + Learning/Skills/Knowledge screens |
-| 13 | Progress snapshots + weekly/monthly reviews + strategy | ✅ done — service + Progress screen (daily snapshots, charts, reviews) + Strategy |
+| 13 | Progress snapshots + weekly/monthly reviews + strategy | ✅ done — service + Progress screen (daily snapshots, charts, reviews) + Strategy. **Time-driven work is now automatic** (`dailyMaintenance`): missed days are backfilled on launch, the evening snapshot and the previous week/month reviews appear on their own, retention runs, one backup a day is taken — every step guarded and idempotent, failures reported instead of fatal (`packages/core/test/maintenance.test.ts`) |
 | 14 | News engine | ✅ done — client service (sources/items/relevance/digest) + **server RSS poller**: 8 real feeds, 30-min polling, URL-hash dedup, urgency scoring, 60-day prune, honest empty/error states (no fake items). **Enrichment: LLM what/why/context when a cloud AI provider is configured** (cheap tier, structured output, 10s timeout, capped at 6 items/refresh — cost control §97), with the deterministic templates as the always-available fallback. |
 | 15 | Notifications | ✅ **web push + FCM done** — client budget/quiet-hours/smart reminders + local scheduling; server: VAPID Web Push (subscribe/poll/deliver queue, urgent-news push with daily cap), **FCM v1 transport** (RS256 service-account JWT, token revocation, urgent = visible OS notification, data-only otherwise), service worker, polling fallback as the guaranteed path. Activation is external: a Firebase project for `ai.lifementor.app` + a server service account (docs/11 §FCM). |
 | 16 | Sync + offline (queue, incremental push/pull, conflicts) | ✅ done end to end — client engine, server API, two-device integration test |
 | 17 | Backup + restore + export/import + account deletion | ✅ done (local images, JSON archives, rotation, purge, **cloud backup slot**: client-side AES-GCM, server stores ciphertext + sha256, `POST/GET/DELETE /v1/backup`) |
-| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 138 automated tests passing (20 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **UI journey tests driving the real client under jsdom**) |
+| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 148 automated tests passing (21 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **maintenance phase gate (snapshots/reviews/backup/retention on a real clock)** + **UI journey tests driving the real client under jsdom**) |
 | 19 | Packaging (Windows NSIS/MSI, Android APK, server release bundle) | 🟡 **one command away** — server bundles to `dist/main.mjs` and runs; shell projects + CI release workflow (`release.yml`: tests → NSIS .exe on windows-latest, APK on ubuntu-latest) are in place; the binaries are produced on a machine with Rust/JDK (or by tagging `v*`) — `docs/11-packaging.md` |
 | 20 | Polishing (UI density, empty states, error copy, perf, a11y, hardening) | 🟡 in progress — error copy, toast a11y, icon-button audit, empty states, performance audit, **UI test layer** and the hardening round below are done; deep profiling on a real device is left |
 
-**Test suite today:** 138 tests, 20 files — `packages/core/test` (public API, persistence + WASM
+**Test suite today:** 148 tests, 21 files — `packages/core/test` (public API, persistence + WASM
 driver durability, **Tauri and Capacitor driver contracts — the exact `sql_*` invoke shapes and
 v8 plugin API the shells implement, run against emulated Rust/Android engines**, sync/backup/
 recovery, auth, AI, onboarding), `apps/server/test` (auth API, sync API, AI gateway, news engine
@@ -41,7 +41,7 @@ recovery, auth, AI, onboarding), `apps/server/test` (auth API, sync API, AI gate
 + caching, message shape, 404→drop, 401→re-exchange, end-to-end urgent/data-only delivery)**,
 urgent-news cap — cloud backup — and a two-device end-to-end run over real HTTP) and
 `apps/web/test` (browser bootstrap: the exact WASM + IndexedDB path the preview uses, including
-first-launch backup, offline AI degradation, offline sync, and data surviving a full restart;
+an automatic backup of real data through the browser storage stack, offline AI degradation, offline sync, and data surviving a full restart;
 plus **UI journey tests**: the real `App` + screens rendered under jsdom over a genuine
 `LifeMentorApp` on a temp SQLite file — the whole first-run onboarding through the DOM, creating
 and completing a task on the Today screen, a mentor chat that really executes a tool, a calendar
@@ -107,6 +107,19 @@ event that the planner never schedules over, and a restart that keeps every conf
      * concurrent plan builds (dashboard + Today + mentor in the same tick) died with
        `cannot start a transaction within a transaction`; `Database.transaction()` now claims the
        connection synchronously and `PlannerService` serialises its builds (`db.runExclusive`).
+     * **time-driven work had no caller at all**: the daily snapshot, the weekly review, the
+       monthly review and the automatic backup only happened if the user pressed a button (and the
+       monthly review had no button). `dailyMaintenance()` now runs at every launch and every
+       30 minutes, with device-local guard flags so nothing is duplicated; the monthly review is
+       also reachable from the Progress screen.
+     * **"backup performed" was never recorded**: rotation ran on every launch (it read
+       `last_backup_at`, which nothing wrote), so the daily backup could pile up; a brand-new
+       install also stored an image of an empty database. The timestamp is now written with the
+       backup, and a pass with nothing to protect stores nothing.
+     * **rotation deleted a manual backup taken seconds after a scheduled one**: the retention
+       logic kept "one record per calendar day", so the second copy of a day was removed as junk.
+       It now keeps the newest seven copies plus the newest of each of the last four weeks and
+       three months — a fresh backup is never rotated away.
      * `deferred` could list a task that was in fact scheduled; the persisted plan is now read
        back from the database, so the UI, the AI context and the history always agree.
      * the Mentor screen took the whole chat down when `Element.scrollTo` was missing (older
@@ -144,7 +157,7 @@ npm start                   # run the bundle
 # Secrets (JWT_SECRET, provider keys, VAPID) go in a .env file in the repo
 # root (copy .env.example) — read by the server, gitignored, never sent to clients.
 
-npm test                    # 138 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
+npm test                    # 148 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
 npm run typecheck           # tsc --noEmit over the whole monorepo
 npm run db:integrity        # server database diagnostics
 

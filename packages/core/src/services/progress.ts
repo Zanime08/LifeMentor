@@ -31,7 +31,11 @@ export interface WeekMetrics extends DayMetrics {
 export interface Achievement { id: string; title: string; detail: string; kind: 'streak' | 'milestone' | 'learning' | 'goal' | 'consistency' }
 
 /** Optional narrative generator — wired to the AI orchestrator when available. */
-export type NarrativeGenerator = (prompt: { kind: 'daily' | 'weekly' | 'monthly'; data: Record<string, unknown> }) => Promise<string>;
+/**
+ * Optional narrative generator (wired to the AI orchestrator). Returning `null` means "no wording
+ * of your own — the service's deterministic text is better", which is what the offline engine does.
+ */
+export type NarrativeGenerator = (prompt: { kind: 'daily' | 'weekly' | 'monthly'; data: Record<string, unknown> }) => Promise<string | null>;
 
 /** Progress + daily/weekly/monthly aggregation (req. 11, 76, 77, 78). */
 export class ProgressService {
@@ -248,7 +252,10 @@ export class SnapshotService {
 
   private async summarize(day: string, data: { metrics: DayMetrics; completed: CompactTask[]; pending: CompactTask[]; achievements: Achievement[]; scheduleChanges: unknown[] }): Promise<string> {
     if (this.narrative) {
-      try { return await this.narrative({ kind: 'daily', data: { day, ...data } }); } catch { /* fall back to the deterministic summary */ }
+      try {
+        const text = await this.narrative({ kind: 'daily', data: { day, ...data } });
+        if (text) return text;
+      } catch { /* fall back to the deterministic summary */ }
     }
     const { metrics, completed, pending, achievements } = data;
     const parts = [`${day}: ${metrics.tasks_completed}/${metrics.tasks_planned} planned tasks completed (${formatDuration(metrics.focus_minutes)} focus, ${formatDuration(metrics.learning_minutes)} learning).`];
@@ -261,21 +268,56 @@ export class SnapshotService {
   }
 
   async get(day: string): Promise<DailySnapshot | null> { return (await this.repos.dailySnapshots.findOne({ day })) ?? null; }
-  async list(limit = 30): Promise<DailySnapshot[]> { return this.repos.dailySnapshots.find({}, { orderBy: { day: 'desc' }, limit }); }
+  async list(limit = 30): Promise<DailySnapshot[]> { return (await this.repos.dailySnapshots.find({}, { orderBy: { day: 'desc' }, limit })); }
 
-  /** Create the snapshot for the previous day if it is missing (called at startup and at rollover). */
-  async ensureUpToDate(ctx: WriteContext = { actor: 'system' }): Promise<{ created: string[]; skipped: boolean }> {
+  /**
+   * Create a snapshot for `day`, but only when the day actually contains something (req. 11, 98).
+   *
+   * A snapshot of a day with no tasks, no events and no learning is noise: it inflates the history
+   * the user and the AI have to read, and it says nothing. Empty days are simply not recorded.
+   * Returns the snapshot, or null when the day held no activity.
+   */
+  async createIfActive(day: string = dayKey(), ctx: WriteContext = { actor: 'system' }): Promise<DailySnapshot | null> {
+    if (!(await this.dayHadActivity(day))) return null;
+    return this.create(day, ctx);
+  }
+
+  /** True when anything at all happened on that day — the gate for snapshots and reviews. */
+  async dayHadActivity(day: string): Promise<boolean> {
+    const metrics = await this.progress.dayMetrics(day);
+    return (
+      metrics.tasks_planned > 0 || metrics.tasks_completed > 0 || metrics.tasks_postponed > 0
+      || metrics.focus_minutes > 0 || metrics.learning_minutes > 0 || metrics.events_count > 0
+      || metrics.goal_touches > 0
+    );
+  }
+
+  /**
+   * Backfill the snapshots of days that were missed because the app was closed (req. 11, 13).
+   *
+   * Called at startup and at every maintenance pass. It deliberately does **not** touch
+   * `last_daily_snapshot_day`: that flag means "today's end-of-day snapshot exists" and is owned by
+   * the end-of-day path. Conflating the two meant a morning startup suppressed the evening
+   * snapshot for the whole day.
+   */
+  async ensureUpToDate(ctx: WriteContext = { actor: 'system' }, options: { now?: Date; days?: number } = {}): Promise<{ created: string[]; checked: string[]; skipped: boolean }> {
     const flags = await this.settings.get('flags');
-    const today = dayKey();
+    const now = options.now ?? new Date();
+    const today = dayKey(now);
     const created: string[] = [];
-    if (flags.last_daily_snapshot_day === today) return { created, skipped: true };
-    for (let i = 1; i <= 3; i++) {
-      const day = dayKey(addDays(new Date(), -i));
-      const existing = await this.repos.dailySnapshots.findOne({ day });
-      if (!existing) created.push(day), await this.create(day, ctx);
+    const checked: string[] = [];
+    if (flags.last_snapshot_check_day === today) return { created, checked, skipped: true };
+    for (let i = 1; i <= (options.days ?? 3); i++) {
+      const day = dayKey(addDays(now, -i));
+      checked.push(day);
+      if (await this.repos.dailySnapshots.findOne({ day })) continue;
+      const snapshot = await this.createIfActive(day, ctx).catch(() => null);
+      if (snapshot) created.push(day);
     }
-    if (flags.last_daily_snapshot_day !== today) await this.settings.set('flags', { last_daily_snapshot_day: today }, ctx);
-    return { created, skipped: false };
+    // Device-local marker ("this device already looked for missed snapshots today"): it must not
+    // travel through sync, or another device would skip its own catch-up run.
+    await this.settings.set('flags', { last_snapshot_check_day: today }, { ...ctx, sync: false });
+    return { created, checked, skipped: false };
   }
 }
 
@@ -414,6 +456,20 @@ export class WeeklyReviewService {
   }
 
   async latest(limit = 8): Promise<WeeklyReview[]> { return this.repos.weeklyReviews.find({}, { orderBy: { week_start: 'desc' }, limit }); }
+
+  /** The review for one specific week, if it exists (used by the mentor and by maintenance). */
+  async forWeek(weekStart: string): Promise<WeeklyReview | null> {
+    return (await this.repos.weeklyReviews.findOne({ week_start: weekStart })) ?? null;
+  }
+
+  /** Did anything happen in that week? Reviews are produced only for weeks with real activity. */
+  async weekHadActivity(weekStart: string): Promise<boolean> {
+    const metrics = await this.progress.weekMetrics(weekStart);
+    return (
+      metrics.days_active > 0 || metrics.tasks_completed > 0 || metrics.tasks_planned > 0
+      || metrics.focus_minutes > 0 || metrics.learning_minutes > 0 || metrics.tasks_postponed > 0
+    );
+  }
 }
 
 /** Monthly review + strategy proposal (req. 78). */
@@ -475,6 +531,27 @@ export class MonthlyReviewService {
   }
 
   async latest(limit = 12): Promise<MonthlyReview[]> { return this.repos.monthlyReviews.find({}, { orderBy: { month: 'desc' }, limit }); }
+
+  /** The review for one specific month, if it exists. */
+  async forMonth(month: string): Promise<MonthlyReview | null> {
+    return (await this.repos.monthlyReviews.findOne({ month })) ?? null;
+  }
+
+  /**
+   * A month with nothing in it has nothing to review. Planned-but-unfinished work counts: "I set up
+   * a plan and did not follow it" is exactly the kind of pattern a monthly review must name.
+   */
+  async monthHadActivity(month: string): Promise<boolean> {
+    const metrics = await this.progress.monthMetrics(month);
+    const planned = metrics.weeks.reduce((a, w) => a + w.tasks_planned, 0);
+    const active = metrics.weeks.reduce((a, w) => a + w.days_active, 0);
+    const events = metrics.weeks.reduce((a, w) => a + w.events_count, 0);
+    return (
+      planned > 0 || active > 0 || events > 0
+      || metrics.tasks_completed > 0 || metrics.focus_minutes > 0 || metrics.learning_minutes > 0
+      || metrics.goals_achieved > 0 || metrics.skill_assessments > 0
+    );
+  }
 }
 
 type CompactTask = ReturnType<typeof compactTask>;

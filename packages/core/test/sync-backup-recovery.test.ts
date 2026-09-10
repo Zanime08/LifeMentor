@@ -151,6 +151,9 @@ async function openDevice(
     backup: { storage: options.storage ?? new MemoryBackupStorage(), onFirstLaunch: false },
     sync: options.server ? { transport: transportFor(options.server, deviceId), autoStart: false } : undefined,
     recover: false,
+    // These tests are about sync and backup semantics; the background maintenance pass (which may
+    // take its own automatic backup) is exercised in its own file with its own clock.
+    maintenance: { enabled: false },
   });
 }
 
@@ -389,6 +392,21 @@ describe('backup and restore', () => {
     expect(days).toContain('2025-12-01'); // kept by the weekly bucket
     expect(days).toContain('2025-11-01'); // kept by the monthly bucket
     expect(days).not.toContain('2025-09-01'); // older than 3 monthly slots
+
+    await app.close();
+  });
+
+  it('keeps a manual backup taken right after a scheduled one (no same-day rotation loss)', async () => {
+    const storage = new MemoryBackupStorage();
+    const app = await openDevice('device-a', { storage });
+
+    const scheduled = await app.services.backup.createBackup('auto', 'scheduled copy');
+    const manual = await app.services.backup.createBackup('manual', 'user copy');
+
+    const kept = await app.services.backup.list();
+    expect(kept.map((b) => b.id)).toEqual(expect.arrayContaining([scheduled.id, manual.id]));
+    expect(await app.services.backup.verify(manual.id)).toMatchObject({ ok: true });
+    expect((await storage.list()).length).toBe(2);
 
     await app.close();
   });

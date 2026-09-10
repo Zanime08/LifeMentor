@@ -107,9 +107,28 @@ so nothing disappears without a trace.
 
 ## 7. Backup & restore (req. 16, 54, 55)
 
-* **Automatic local backup**: after migrations, before imports, daily (rotating: keep 7 daily +
-  4 weekly + 3 monthly), and on explicit user action. Implemented as a SQLite online backup
-  (VACUUM INTO / byte copy under a read transaction) → `backups/lifementor-<ts>.sqlite`.
+* **Automatic local backup**: at the first maintenance pass that finds real data, once a day
+  (20 h spacing), before imports, and on explicit user action. Implemented as a SQLite online
+  backup (VACUUM INTO / byte copy under a read transaction) → `backups/lifementor-<ts>.sqlite`.
+  A brand-new install stores nothing: an image of an empty database is junk, and it would also
+  mark the day as "already backed up" and swallow the first real copy.
+* **Rotation**: the newest seven copies are always kept, plus the newest copy of each of the last
+  four weeks and three months (grandfather–father–son). A copy taken today is never removed to make
+  room for one taken later the same day — pressing "back up now" right after the scheduled copy
+  must not lose the file.
+* **What triggers the maintenance pass**: `LifeMentorApp.dailyMaintenance()` at every launch (in the
+  background, never blocking the first screen) and every 30 minutes while the app stays open. Steps:
+  backfill snapshots for missed days, take the evening snapshot of the day that ended, create the
+  weekly review of the completed week, create the monthly review of the completed month, run
+  retention (memory/personalisation/news/delivered notifications), take the daily backup, run a WAL
+  checkpoint. Each step is guarded by a flag or an existence check, so running the pass a hundred
+  times a day is a no-op after the first; a failure in one step is reported in the pass report and
+  never stops the app from opening.
+* **Guard flags stay on the device**: `last_daily_snapshot_day`, `last_snapshot_check_day`,
+  `last_weekly_review_week`, `last_monthly_review_month`, `last_backup_at` are operational
+  bookkeeping (`flags` settings group, written with `sync: false`). They must not travel through
+  sync — a second device would skip its own snapshot, review and backup — while the snapshots and
+  reviews themselves do synchronise.
 * **Export my data**: portable archive `LifeMentor-export-<date>.json` (+ optional per-domain files
   `profile.json goals.json skills.json projects.json tasks.json calendar.json memory.json
   progress.json learning.json news.json settings.json`) with a manifest

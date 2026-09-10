@@ -303,8 +303,11 @@ export class RecoveryService {
   private async ensureSnapshot(actions: RecoveryAction[], issues: RecoveryIssue[]): Promise<void> {
     const flags = await this.deps.settings.all();
     const today = dayKey();
-    if (flags.flags.last_daily_snapshot_day === today) {
-      actions.push({ step: 'daily snapshot', status: 'ok', detail: `already created for ${today}` });
+    // `last_snapshot_check_day` — "we already looked for missed snapshots today". It must not be
+    // `last_daily_snapshot_day`, which means "today's end-of-day snapshot was taken": a morning
+    // startup would otherwise suppress the evening snapshot for the rest of the day.
+    if (flags.flags.last_snapshot_check_day === today) {
+      actions.push({ step: 'daily snapshot', status: 'ok', detail: `already checked for ${today}` });
       return;
     }
     if (!this.deps.snapshots) {
@@ -313,8 +316,7 @@ export class RecoveryService {
     }
     try {
       const result = await this.deps.snapshots.ensureUpToDate({ actor: 'system', deviceId: this.deps.deviceId });
-      await this.deps.settings.setState('last_daily_snapshot_day', today);
-      actions.push({ step: 'daily snapshot', status: 'ok', detail: result.created.length ? `created ${result.created.join(', ')}` : 'up to date' });
+      actions.push({ step: 'daily snapshot', status: 'ok', detail: result.created.length ? `created ${result.created.join(', ')}` : `up to date (checked ${result.checked.join(', ')})` });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       actions.push({ step: 'daily snapshot', status: 'failed', detail: message });

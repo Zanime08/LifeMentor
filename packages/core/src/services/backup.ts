@@ -100,6 +100,9 @@ export class BackupService {
     } as never, { actor: 'system', sync: false, audit: true, reason: `backup (${kind})` }) as BackupRecord;
 
     log.info('backup created', { kind, bytes: bytes.byteLength, ms: Date.now() - started, path });
+    // The timestamp lives with the backup itself: the maintenance scheduler uses it to decide
+    // whether a new day needs a new copy, and it must stay truthful for manual backups too.
+    await this.deps.settings.set('flags', { last_backup_at: nowIso() }, { actor: 'system', sync: false });
     await this.rotate();
     return record;
   }
@@ -167,10 +170,15 @@ export class BackupService {
 
   /** Keep 7 daily, 4 weekly and 3 monthly backups; delete the rest. */
   async rotate(): Promise<{ kept: number; removed: number }> {
-    const all = await this.list();
+    const all = await this.list(); // newest first
     const keep = new Set<string>();
+    // The newest copies always survive. Retention used to work per calendar day, which meant a
+    // manual backup taken seconds after the scheduled one was deleted by that very backup: the
+    // user pressed "back up now" and lost the file. "7 daily" must mean seven backups, not
+    // "one per day".
+    for (const record of all.slice(0, RETENTION.daily)) keep.add(record.id);
+    // Grandfather–father–son for older history: the newest copy of each of the last weeks/months.
     const buckets: { key: (d: Date) => string; limit: number; seen: Set<string> }[] = [
-      { key: (d) => d.toISOString().slice(0, 10), limit: RETENTION.daily, seen: new Set() },
       { key: (d) => `${weekKey(d)}`, limit: RETENTION.weekly, seen: new Set() },
       { key: (d) => d.toISOString().slice(0, 7), limit: RETENTION.monthly, seen: new Set() },
     ];
@@ -178,8 +186,11 @@ export class BackupService {
       const date = new Date(record.created_at);
       if (Number.isNaN(date.getTime())) continue;
       for (const bucket of buckets) {
+        if (bucket.seen.size >= bucket.limit) continue;
         const key = bucket.key(date);
-        if (bucket.seen.size < bucket.limit && !bucket.seen.has(key)) { bucket.seen.add(key); keep.add(record.id); }
+        if (bucket.seen.has(key)) continue;
+        bucket.seen.add(key);
+        keep.add(record.id);
       }
     }
     let removed = 0;

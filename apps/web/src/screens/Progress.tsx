@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import type { DailySnapshot, DayMetrics, WeeklyReview } from '@lifementor/core';
+import type { DailySnapshot, DayMetrics, MonthlyReview, WeeklyReview } from '@lifementor/core';
 import { Btn, Card, Empty, PageHead, Spinner, Tag, BarChart } from '../components/ui';
 import { useApp } from '../state/store';
 import { fmtDay, fmtDayShort, fmtMinutes, timeAgo } from '../lib/ru';
@@ -11,6 +11,7 @@ export function ProgressScreen() {
   const [achievements, setAchievements] = useState<import('@lifementor/core').Achievement[]>([]);
   const [snapshots, setSnapshots] = useState<DailySnapshot[]>([]);
   const [weekly, setWeekly] = useState<WeeklyReview[]>([]);
+  const [monthly, setMonthly] = useState<MonthlyReview[]>([]);
   const [openSnap, setOpenSnap] = useState<DailySnapshot | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -19,14 +20,15 @@ export function ProgressScreen() {
     let stop = false;
     (async () => {
       try {
-        const [s, st, a, sn, w] = await Promise.all([
+        const [s, st, a, sn, w, m] = await Promise.all([
           app.services.progress.series(14),
           app.services.progress.streak(),
           app.services.progress.achievements(),
           app.services.snapshots.list(30),
           app.services.weeklyReviews.latest(8),
+          app.services.monthlyReviews.latest(6),
         ]);
-        if (!stop) { setSeries(s); setStreak(st); setAchievements(a); setSnapshots(sn); setWeekly(w); }
+        if (!stop) { setSeries(s); setStreak(st); setAchievements(a); setSnapshots(sn); setWeekly(w); setMonthly(m); }
       } catch (e) { console.error(e); }
     })();
     return () => { stop = true; };
@@ -43,6 +45,20 @@ export function ProgressScreen() {
       const review = await app.services.weeklyReviews.create();
       toast('Еженедельный разбор готов: что вышло, что тормозило, что делать дальше.', 'ok');
       setWeekly((w) => [review, ...w]);
+    } catch (e) {
+      toastError(e);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runMonthly = async () => {
+    if (!app) return;
+    setBusy('monthly');
+    try {
+      const review = await app.services.monthlyReviews.create();
+      toast('Месячный разбор готов: цели, навыки, проекты и предложение по стратегии.', 'ok');
+      setMonthly((m) => [review, ...m.filter((x) => x.id !== review.id)]);
     } catch (e) {
       toastError(e);
     } finally {
@@ -70,6 +86,7 @@ export function ProgressScreen() {
         actions={
           <>
             <Btn size="sm" onClick={() => void runSnapshot()} disabled={busy !== null}>{busy === 'snapshot' ? 'Создаю…' : 'Снепшот дня'}</Btn>
+            <Btn size="sm" onClick={() => void runMonthly()} disabled={busy !== null}>{busy === 'monthly' ? 'Считаю…' : 'Месячный разбор'}</Btn>
             <Btn kind="primary" size="sm" onClick={() => void runWeekly()} disabled={busy !== null}>{busy === 'weekly' ? 'Считаю…' : 'Еженедельный разбор'}</Btn>
           </>
         } />
@@ -86,8 +103,22 @@ export function ProgressScreen() {
             <BarChart data={chartData} height={130} alt="выполнение задач по дням" />
           </Card>
 
-          <Card title="Еженедельные разборы" sub="Искать закономерности, а не пересказывать статистику">
-            {weekly.length === 0 && <div className="small muted">Ещё не было разборов. Нажмите «Еженедельный разбор».</div>}
+          <Card title="Месячные разборы" sub="Цели, навыки, проекты и предложение по стратегии — создаётся автоматически в начале месяца">
+            {monthly.length === 0 && <div className="small muted">Первый месячный разбор появится сам после первого полного месяца работы — или по кнопке выше.</div>}
+            {monthly.map((m) => (
+              <div key={m.id} className="list-item" style={{ alignItems: 'flex-start' }}>
+                <div className="li-main">
+                  <div className="li-title">{m.month}</div>
+                  <div className="li-sub">создан {timeAgo(m.created_at)}</div>
+                  {m.priority_changes && <div className="small mt-sm"><b>Приоритеты:</b> {m.priority_changes}</div>}
+                  {m.strategy_proposal && <div className="small" style={{ whiteSpace: 'pre-wrap' }}><b>Стратегия:</b> {m.strategy_proposal}</div>}
+                </div>
+              </div>
+            ))}
+          </Card>
+
+          <Card title="Еженедельные разборы" sub="Искать закономерности, а не пересказывать статистику — прошедшая неделя разбирается автоматически">
+            {weekly.length === 0 && <div className="small muted">Ещё не было разборов: первый появится сам после первой недели с активностью — или нажмите «Еженедельный разбор».</div>}
             {weekly.map((w) => (
               <div key={w.id} className="list-item" style={{ alignItems: 'flex-start' }}>
                 <div className="li-main">
@@ -119,7 +150,7 @@ export function ProgressScreen() {
 
           <Card title="Снепшоты дней" sub="Автоматический срез: что сделано, что перенесено, что изменилось"
             action={<Btn kind="ghost" size="xs" onClick={() => void runSnapshot()} disabled={busy !== null}>+ сейчас</Btn>}>
-            {snapshots.length === 0 && <Empty icon={I0} title="Снепшотов пока нет" hint="Первый создастся сегодня автоматически в конце дня — или по кнопке выше." />}
+            {snapshots.length === 0 && <Empty icon={I0} title="Снепшотов пока нет" hint="Первый создастся автоматически в конце дня с задачами или событиями — или по кнопке выше." />}
             {snapshots.map((s) => (
               <div key={s.id} className="row" style={{ gap: 10, padding: '6px 0', cursor: 'pointer' }} onClick={() => setOpenSnap(s)}>
                 <span className="grow small" style={{ fontWeight: 600 }}>{fmtDay(s.day)}</span>

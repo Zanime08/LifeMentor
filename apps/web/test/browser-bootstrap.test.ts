@@ -38,6 +38,9 @@ function appOptions(persistence: IndexedDbPersistence): LifeMentorOptions {
     sync: { serverUrl: DEAD_SERVER, autoStart: true, intervalMs: 3_600_000 },
     auth: { serverUrl: DEAD_SERVER },
     backup: { onFirstLaunch: true },
+    // The background maintenance pass is driven explicitly below, so this test does not race its
+    // own assertions (it lives in its own file, with its own clock).
+    maintenance: { enabled: false },
   };
 }
 
@@ -49,9 +52,14 @@ afterAll(async () => {
 });
 
 describe('browser bootstrap (WASM driver + IndexedDB, offline server)', () => {
-  it('first launch: migrates, bootstraps, first-launch backup, usable AI and sync offline', async () => {
+  it('first launch: migrates, bootstraps, backs up real data, usable AI and sync offline', async () => {
     const persistence = new IndexedDbPersistence('lifementor-webtest', 'sqlite', 'main');
     const app = track(await LifeMentorApp.create(appOptions(persistence)));
+
+    // A brand-new install has nothing to protect: no empty baseline image is stored (req. 13 is
+    // about the user's data, and an image of an empty database would also suppress the first real
+    // daily backup of the day).
+    expect(await app.services.backup.list()).toHaveLength(0);
 
     // Platform/driver selected exactly like in the browser.
     const health = await app.health();
@@ -73,10 +81,16 @@ describe('browser bootstrap (WASM driver + IndexedDB, offline server)', () => {
     const memory = await app.services.memory.save({ kind: 'fact', content: 'Живу в Москве', importance: 0.8 });
     expect(memory.id).toBeTruthy();
 
-    // First-launch baseline backup was created (req. 13) and stored as real bytes.
+    // With real data present, the maintenance pass takes a genuine automatic backup through the
+    // browser storage stack (req. 13, 16): real bytes, real checksum, restorable image.
+    const maintenance = await app.dailyMaintenance();
+    expect(maintenance.failed).toEqual([]);
+    expect(maintenance.backup).toBe(true);
     const backups = await app.services.backup.list();
     expect(backups).toHaveLength(1);
-    expect(backups[0].note).toMatch(/first launch/i);
+    expect(backups[0].kind).toBe('auto');
+    expect(backups[0].size_bytes).toBeGreaterThan(10_000);
+    expect(await app.services.backup.verify(backups[0].id)).toMatchObject({ ok: true });
 
     // AI: the gateway is unreachable → honest offline degradation, not a crash.
     const turn = await app.ai.mentor.chat('Привет, что ты умеешь?');
@@ -124,8 +138,10 @@ describe('browser bootstrap (WASM driver + IndexedDB, offline server)', () => {
     expect(await app.repos.devices.count({})).toBe(1);
     expect(health.ok).toBe(true);
 
-    // No second first-launch backup.
+    // Still exactly one backup: this launch neither duplicates the baseline (there is none) nor
+    // takes another automatic copy of the same day.
     const backups = await app.services.backup.list();
     expect(backups).toHaveLength(1);
+    expect(await app.services.backup.verify(backups[0].id)).toMatchObject({ ok: true });
   });
 });
