@@ -324,6 +324,30 @@ describe('first run in the browser client (dom, real engine)', () => {
     expect((await screen.findAllByText(/Выбрал другое направление/, {}, { timeout: 40_000 })).length).toBeGreaterThan(0);
   }, 180_000);
 
+  it('lets the user search their own long-term memory (req. 51–53)', async () => {
+    window.location.hash = '#/profile';
+    render(<App />);
+    await waitFor(() => expect(openApp()).not.toBeNull(), { timeout: 30_000 });
+    await openApp()!.services.memory.save({
+      kind: 'preference',
+      content: 'Предпочитает учиться утром, до работы',
+      importance: 0.8,
+      confidence: 'confirmed',
+      source: 'user_provided',
+    });
+
+    const box = await screen.findByPlaceholderText(/Поиск по памяти/, {}, { timeout: 30_000 }) as HTMLInputElement;
+    await user.type(box, 'утром');
+    expect(await screen.findByText('Предпочитает учиться утром, до работы', {}, { timeout: 20_000 })).toBeTruthy();
+    // The hit says *why* it matched: the memory searches by words and by meaning.
+    expect((await screen.findAllByText(/по словам|по смыслу/)).length).toBeGreaterThan(0);
+
+    // A query that matches nothing says so, instead of showing an empty card.
+    await user.clear(box);
+    await user.type(box, 'зыбучий песок на Марсе');
+    expect(await screen.findByText(/Ничего не нашлось/, {}, { timeout: 20_000 })).toBeTruthy();
+  }, 120_000);
+
   it('returns to the last screen and keeps an unsent message (req. 13)', async () => {
     window.location.hash = '#/mentor';
     render(<App />);

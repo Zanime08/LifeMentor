@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { Memory, UserModel } from '@lifementor/core';
-import { Btn, Card, Confirm, Empty, I, PageHead, Spinner, Tag } from '../components/ui';
+import type { Memory, ScoredMemory, UserModel } from '@lifementor/core';
+import { Btn, Card, Confirm, Empty, I, PageHead, Spinner, Tag, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
 import { SECTION_RU } from '../lib/onboarding-ru';
 import { KIND_RU, timeAgo } from '../lib/ru';
@@ -13,6 +13,8 @@ export function Profile() {
   const [memories, setMemories] = useState<Awaited<ReturnType<import('@lifementor/core').MemoryService['viewerData']>> | null>(null);
   const [persona, setPersona] = useState<string[]>([]);
   const [deleting, setDeleting] = useState<Memory | null>(null);
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<ScoredMemory[] | null>(null);
 
   useEffect(() => {
     if (!app) return;
@@ -29,6 +31,28 @@ export function Profile() {
     })();
     return () => { stop = true; };
   }, [app, version]);
+
+  // Search across long-term memory (req. 51–53): the user must be able to ask "what do you know
+  // about X" themselves, not only through the AI. It searches by words *and* by meaning, says
+  // which one matched, and every hit keeps its confirm/mark-wrong/delete controls.
+  useEffect(() => {
+    if (!app) return;
+    const text = query.trim();
+    if (text.length < 2) { setResults(null); return; }
+    let stop = false;
+    const timer = window.setTimeout(() => {
+      app.services.memory.search(text, { limit: 10, includeUnconfirmed: true })
+        .then((found) => { if (!stop) setResults(found); })
+        .catch(() => { if (!stop) setResults([]); });
+    }, 250);
+    return () => { stop = true; window.clearTimeout(timer); };
+  }, [app, query]);
+
+  // `memory.search` is built for the AI context: when nothing matches it still returns the most
+  // important/recent memories so the model has *something*. A search box must not do that — it
+  // would answer "зыбучий песок на Марсе" with the user's goals as if they matched. Only hits with
+  // a real match reason are shown, and the reason is stated.
+  const hits = results?.filter((m) => m.matched_by.includes('semantic') || m.matched_by.includes('keyword')) ?? null;
 
   if (!model || !memories) return <Spinner label="Открываю профиль…" />;
 
@@ -74,6 +98,39 @@ export function Profile() {
           </Card>
 
           <Card title="Что ИИ помнит" sub="Долгосрочная память: факты, предпочтения, решения, выводы. Всё можно подтвердить, пометить неверным или удалить.">
+            <div className="row wrap" style={{ gap: 8, marginBottom: 10 }}>
+              <TextInput
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Поиск по памяти: «финансы», «спорт», «что я решил про работу»"
+                style={{ flex: 1, minWidth: 220 }}
+              />
+              {query.length > 0 && <Btn size="xs" onClick={() => setQuery('')}>Сбросить</Btn>}
+            </div>
+            {hits ? (
+              hits.length === 0 ? (
+                <div className="small muted">Ничего не нашлось. Память ищет и по словам, и по смыслу — попробуйте другой запрос.</div>
+              ) : (
+                <>
+                  <div className="section-title" style={{ marginTop: 4 }}>Найдено ({hits.length})</div>
+                  {hits.map((m) => (
+                    <div key={m.id} className="row" style={{ gap: 8, padding: '4px 0', alignItems: 'flex-start' }}>
+                      <div className="grow">
+                        <span className="small">{m.content}</span>
+                        <span className="xsmall muted">
+                          {' · '}{KIND_RU[m.source] ?? m.source}
+                          {m.matched_by.includes('semantic') ? ' · по смыслу' : ''}
+                          {m.matched_by.includes('keyword') ? ' · по словам' : ''}
+                        </span>
+                      </div>
+                      {m.needs_confirmation === 1 && <Btn kind="ghost" size="xs" onClick={() => void mutate(() => app!.services.memory.confirm(m.id), 'Подтверждено')}>подтвердить</Btn>}
+                      <Btn kind="ghost" size="xs" title="Удалить" onClick={() => setDeleting(m)}>{I.trash}</Btn>
+                    </div>
+                  ))}
+                </>
+              )
+            ) : (
+              <>
             <MemoryList title="Факты" items={memories.facts} onDelete={setDeleting} />
             <MemoryList title="Предпочтения" items={memories.preferences} onDelete={setDeleting} />
             <MemoryList title="Решения и смены целей" items={memories.goals} onDelete={setDeleting} />
@@ -83,6 +140,8 @@ export function Profile() {
                 <b>Предположения ИИ ({memories.assumptions.length}):</b>
                 {memories.assumptions.slice(0, 6).map((m) => <div key={m.id} className="small mt-sm">• {m.content} — подтвердите, если верно</div>)}
               </div>
+            )}
+              </>
             )}
           </Card>
         </div>
