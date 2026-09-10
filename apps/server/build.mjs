@@ -28,6 +28,17 @@ await build({
   alias: {
     '@lifementor/core': path.join(monorepoRoot, 'packages/core/src/index.ts'),
   },
-  banner: { js: '#!/usr/bin/env node\n// LifeMentor server — bundled entry point (dist/main.mjs)' },
+  // The bundle is ESM, but some bundled CommonJS dependencies still call `require('node:crypto')`.
+  // Without a `require` in scope esbuild's shim throws `Dynamic require of "crypto" is not
+  // supported` at startup. This is the standard ESM bridge — the banner runs before the shim is
+  // created, so it is defined by the time it is needed.
+  banner: {
+    js: [
+      '#!/usr/bin/env node',
+      '// LifeMentor server — bundled entry point (dist/main.mjs)',
+      'import { createRequire as __lmCreateRequire } from "node:module";',
+      'const require = __lmCreateRequire(import.meta.url);',
+    ].join('\n'),
+  },
   logLevel: 'info',
 });

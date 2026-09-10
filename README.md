@@ -57,6 +57,10 @@ npm test               # 150 автотестов (core + server + web bootstrap
 
 npm run dev --workspace @lifementor/server   # API на :8787
 npm run dev --workspace @lifementor/web      # веб-приложение на :5173 (прокси /v1 → :8787)
+
+npm run init:env       # один раз: .env со стабильными JWT-секретом и VAPID-ключом
+                       # (без него сессии и push-подписки сбрасываются при каждом перезапуске)
+npm run build:server   # прод-бандл сервера → apps/server/dist/main.mjs
 ```
 
 Откройте http://localhost:5173 → регистрация → onboarding (опросник → адаптивное интервью →

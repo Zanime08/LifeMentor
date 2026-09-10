@@ -128,6 +128,29 @@ enabled in the CI-built APK when the repository has the `GOOGLE_SERVICES_JSON_B6
 (base64 of `google-services.json`) — otherwise the APK ships with the polling fallback, as
 above.
 
+## Running the server on your own machine (Windows)
+
+The clients only need a server URL; one machine on the same network can host it. Three steps on
+that machine, all PowerShell/cmd — no Docker, no database install:
+
+```bat
+npm install
+npm run init:env        :: once: writes .env with a stable JWT secret + VAPID key pair
+npm run build:server    :: bundles apps/server/dist/main.mjs
+install-autostart.ps1   :: optional: starts the server at logon, hidden, logging to server.log
+:: or: server.bat      :: foreground window, close it to stop
+```
+
+`init:env` is what makes the server *stable*: without a `.env` the server runs in development
+mode, where the JWT secret and the VAPID pair are regenerated on every launch — meaning every
+session and every Web Push subscription dies on restart. It never overwrites an existing `.env`,
+so it is safe to run again after an update. Provider API keys are **not** invented by the tool;
+add them (or configure them in the app's Settings → AI) to enable cloud models — the local
+heuristics work without any keys.
+
+Check it with `http://localhost:8787/v1/health` (`ok: true`, `integrity.ok: true`, and the
+provider list showing which cloud keys are present).
+
 ## Icons
 
 `assets/app-icon-1024.png` is the master icon. `scripts/generate-icons.mjs` renders it

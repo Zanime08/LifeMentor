@@ -12,7 +12,8 @@
     "test": "vitest run --dir test",
     "db:integrity": "tsx src/tools/integrity.ts",
     "integrity": "tsx src/tools/integrity.ts",
-    "vapid:keys": "tsx src/tools/vapid-keys.ts"
+    "vapid:keys": "tsx src/tools/vapid-keys.ts",
+    "init:env": "tsx src/tools/init-env.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
