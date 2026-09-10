@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { SERVER_ROOT } from './paths';
 
 /**
  * Server configuration (docs/08 §2, §3, §8).
@@ -20,7 +22,9 @@ const ConfigSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   HOST: z.string().default('0.0.0.0'),
   PORT: numberish(8787),
-  DATABASE_PATH: z.string().default('data/server.sqlite'),
+  // Absolute by default: npm runs workspace scripts with cwd = apps/server, so a
+  // relative default would silently put the database in the wrong folder.
+  DATABASE_PATH: z.string().default(resolve(SERVER_ROOT, 'data', 'server.sqlite')),
   DATABASE_IN_MEMORY: booleanish.default(false),
 
   JWT_SECRET: z.string().min(16).optional(),

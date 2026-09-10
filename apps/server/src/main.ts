@@ -1,4 +1,5 @@
 import { loadConfig, ConfigError, hasCloudAI } from './config';
+import { loadDotEnv } from './dotenv';
 import { buildServer } from './app';
 
 /**
@@ -7,6 +8,8 @@ import { buildServer } from './app';
  * Deployment is a single Node service — no Docker for the operator, none for the user (docs/08 §8).
  */
 async function main(): Promise<void> {
+  // Operator-side .env (cwd) — shell environment always takes priority.
+  loadDotEnv();
   let config;
   try {
     config = loadConfig();

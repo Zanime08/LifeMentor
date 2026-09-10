@@ -114,6 +114,14 @@ npm run dev                 # both, in one terminal
 npm run build:server        # bundle → apps/server/dist/main.mjs
 npm start                   # run the bundle
 
+# Windows, one local machine:
+#   server.bat — double-click: dev server in a console window (close to stop)
+#   install-autostart.bat — one-time: server starts at every logon, hidden,
+#     production bundle, logs to server.log (remove: schtasks /Delete /TN
+#     "LifeMentor Server" /F)
+# Secrets (JWT_SECRET, provider keys, VAPID) go in a .env file in the repo
+# root (copy .env.example) — read by the server, gitignored, never sent to clients.
+
 npm test                    # 121 tests (core + server + shell driver contracts + web bootstrap)
 npm run typecheck           # tsc --noEmit over the whole monorepo
 npm run db:integrity        # server database diagnostics
