@@ -28,11 +28,11 @@ that exposes it is tracked separately, because a service without a screen is not
 | 15 | Notifications | ✅ **web push + FCM done** — client budget/quiet-hours/smart reminders + local scheduling; server: VAPID Web Push (subscribe/poll/deliver queue, urgent-news push with daily cap), **FCM v1 transport** (RS256 service-account JWT, token revocation, urgent = visible OS notification, data-only otherwise), service worker, polling fallback as the guaranteed path. Activation is external: a Firebase project for `ai.lifementor.app` + a server service account (docs/11 §FCM). |
 | 16 | Sync + offline (queue, incremental push/pull, conflicts) | ✅ done end to end — client engine, server API, two-device integration test |
 | 17 | Backup + restore + export/import + account deletion | ✅ done (local images, JSON archives, rotation, purge, **cloud backup slot**: client-side AES-GCM, server stores ciphertext + sha256, `POST/GET/DELETE /v1/backup`) |
-| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API) | ✅ 121 automated tests passing (17 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup) |
+| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 138 automated tests passing (20 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **UI journey tests driving the real client under jsdom**) |
 | 19 | Packaging (Windows NSIS/MSI, Android APK, server release bundle) | 🟡 **one command away** — server bundles to `dist/main.mjs` and runs; shell projects + CI release workflow (`release.yml`: tests → NSIS .exe on windows-latest, APK on ubuntu-latest) are in place; the binaries are produced on a machine with Rust/JDK (or by tagging `v*`) — `docs/11-packaging.md` |
-| 20 | Polishing (UI density, empty states, error copy, perf, a11y) | ⬜ not started |
+| 20 | Polishing (UI density, empty states, error copy, perf, a11y, hardening) | 🟡 in progress — error copy, toast a11y, icon-button audit, empty states, performance audit, **UI test layer** and the hardening round below are done; deep profiling on a real device is left |
 
-**Test suite today:** 121 tests, 17 files — `packages/core/test` (public API, persistence + WASM
+**Test suite today:** 138 tests, 20 files — `packages/core/test` (public API, persistence + WASM
 driver durability, **Tauri and Capacitor driver contracts — the exact `sql_*` invoke shapes and
 v8 plugin API the shells implement, run against emulated Rust/Android engines**, sync/backup/
 recovery, auth, AI, onboarding), `apps/server/test` (auth API, sync API, AI gateway, news engine
@@ -41,7 +41,11 @@ recovery, auth, AI, onboarding), `apps/server/test` (auth API, sync API, AI gate
 + caching, message shape, 404→drop, 401→re-exchange, end-to-end urgent/data-only delivery)**,
 urgent-news cap — cloud backup — and a two-device end-to-end run over real HTTP) and
 `apps/web/test` (browser bootstrap: the exact WASM + IndexedDB path the preview uses, including
-first-launch backup, offline AI degradation, offline sync, and data surviving a full restart).
+first-launch backup, offline AI degradation, offline sync, and data surviving a full restart;
+plus **UI journey tests**: the real `App` + screens rendered under jsdom over a genuine
+`LifeMentorApp` on a temp SQLite file — the whole first-run onboarding through the DOM, creating
+and completing a task on the Today screen, a mentor chat that really executes a tool, a calendar
+event that the planner never schedules over, and a restart that keeps every confirmed write).
 
 ## What is deliberately NOT built yet
 
@@ -55,8 +59,10 @@ first-launch backup, offline AI degradation, offline sync, and data surviving a 
   when the app is closed). Turning it on needs a free Firebase project for `ai.lifementor.app`
   (`google-services.json`) and a server service account — we cannot create those here. Without
   them the app is honest: no FCM token, and every notification still arrives via polling.
-* **UI-level automated tests** (Playwright) — engine and API are covered; the 13 web screens are
-  exercised manually against the running dev preview.
+* **Browser-level UI automation** (Playwright + a real Chromium) — the DOM/logic layer is now
+  covered by the jsdom journey tests in CI, but only a real browser exercises the surface jsdom
+  does not implement (service worker, Web Push, OPFS, IndexedDB); that stays the Playwright
+  `ui-smoke` job in `release.yml`, which needs a machine with a browser.
 
 ## Next phases
 
@@ -89,6 +95,22 @@ first-launch backup, offline AI degradation, offline sync, and data surviving a 
    - **DONE — performance static audit (§96)**: no `JSON.stringify` in render loops, `useMemo`
      on the compute-heavy screens, heavy work lives in the Rust/WASM layer. No action items.
    - **Audited, already fine**: empty states on all 13 screens (Russian title + hint + action).
+   - **DONE — hardening round (2026-09-10)**, found by the new UI/planner tests:
+     * the Today screen crashed with `UNIQUE constraint failed: task_history.id` when a plan was
+       built twice (every "Построить план", mentor `plan_day`, or onboarding retry). Fixed at the
+       root: one writer for the plan — `buildDay()` persists inside a single transaction and
+       returns the stored plan, callers no longer persist it a second time, and the per-task
+       history row is upserted instead of inserted.
+     * `last_day_plan` was never written on a fresh database (`repo.update()` returns `undefined`
+       for a missing row instead of throwing, so the `update().catch(insert)` fallback never ran) —
+       the planner now checks and inserts.
+     * concurrent plan builds (dashboard + Today + mentor in the same tick) died with
+       `cannot start a transaction within a transaction`; `Database.transaction()` now claims the
+       connection synchronously and `PlannerService` serialises its builds (`db.runExclusive`).
+     * `deferred` could list a task that was in fact scheduled; the persisted plan is now read
+       back from the database, so the UI, the AI context and the history always agree.
+     * the Mentor screen took the whole chat down when `Element.scrollTo` was missing (older
+       Android WebViews, non-browser DOM hosts) — guarded.
    - **Remaining**: deep performance profiling (separate phase, needs a real device).
 
 ## Web UI — what is built (`apps/web`, React + Vite, runs as the dev preview)
@@ -122,7 +144,7 @@ npm start                   # run the bundle
 # Secrets (JWT_SECRET, provider keys, VAPID) go in a .env file in the repo
 # root (copy .env.example) — read by the server, gitignored, never sent to clients.
 
-npm test                    # 121 tests (core + server + shell driver contracts + web bootstrap)
+npm test                    # 138 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
 npm run typecheck           # tsc --noEmit over the whole monorepo
 npm run db:integrity        # server database diagnostics
 

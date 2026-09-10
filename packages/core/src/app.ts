@@ -278,7 +278,7 @@ export class LifeMentorApp {
 
     const tools = createTools({
       tasks, goals, calendar, projects, skills, learning, memory, news, progress,
-      notifications, profile, settings, personalization, planner, knowledge,
+      notifications, profile, settings, personalization, planner, knowledge, repos,
     });
     const context = new ContextEngine({
       profile, settings, goals, tasks, calendar, projects, skills, learning,

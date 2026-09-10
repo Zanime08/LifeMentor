@@ -1,3 +1,4 @@
+import type { Repos } from '../db/repos';
 import { z, type ZodTypeAny } from 'zod';
 import type { WriteContext } from '../db/repo';
 import type { Task, Goal, Skill, Project, LearningTopic, LearningPath } from '../domain/types';
@@ -100,6 +101,8 @@ export interface ToolDeps {
   personalization: PersonalizationService;
   planner: PlannerService;
   knowledge?: KnowledgeService;
+  /** Read-only access used to report what the planner actually wrote (counts, plan state). */
+  repos?: Repos;
 }
 
 export class ToolRegistry {
@@ -906,8 +909,12 @@ export function createTools(deps: ToolDeps): ToolRegistry {
     },
     async execute(args, ctx) {
       const day = args.day ?? ctx.day;
+      // buildDay persists inside one transaction (and with `now` when we only rebuild the rest of
+      // the day) — it already returns the stored plan, so it must not be written a second time.
       const plan = await deps.planner.buildDay(day, args.from_now && day === ctx.day ? { now: ctx.now } : {});
-      const tasks = await deps.planner.persist(plan, day, ctx.write);
+      const tasks = deps.repos
+        ? await deps.repos.tasks.find({ scheduled_date: day, status: 'scheduled' }, { limit: 200 })
+        : [];
       return {
         message: `Plan for ${day}: ${plan.slots.length} slots, ${plan.focus_minutes}m focus, ${plan.free_minutes}m free time kept${plan.overload ? ' — capacity exceeded, some tasks deferred' : ''}.${plan.deferred.length ? ` Deferred: ${plan.deferred.map((d) => d.title).join(', ')}.` : ''}`,
         data: { day, slots: plan.slots.map((s) => ({ title: s.title, task_id: s.taskId ?? null, start: s.start, end: s.end, kind: s.kind })), deferred: plan.deferred, warnings: plan.warnings, persisted: tasks.length },

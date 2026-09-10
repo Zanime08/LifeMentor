@@ -36,6 +36,8 @@ export class Database {
   private readonly log = createLogger('db');
   private depth = 0;
   private savepointSeq = 0;
+  /** Tail of the serialisation queue used by `runExclusive()`. */
+  private tail: Promise<void> = Promise.resolve();
   private schemaVersion = 0;
 
   constructor(private readonly options: DatabaseOptions) {
@@ -80,15 +82,24 @@ export class Database {
 
   // ───────────────────────────── transactions ─────────────────────────────
   /**
-   * Run `fn` inside a transaction. Nested calls use SAVEPOINTs and only the outermost
-   * COMMIT hits the disk. On the WASM driver the image is flushed after the outer commit so
-   * "committed" really means durable (req. 8).
+   * Run `fn` inside a transaction. Nested calls from the *same* operation use SAVEPOINTs and
+   * only the outermost COMMIT hits the disk. On the WASM driver the image is flushed after the
+   * outer commit so "committed" really means durable (req. 8).
+   *
+   * Concurrency contract (req. 8, 9, 96): independent operations must not run transactions at
+   * the same time. A nested call joins the owner's transaction, so a failure in the owner would
+   * roll back a sibling's already-acknowledged writes. Use `runExclusive()` — or a service-level
+   * lock — to serialise work that can be triggered from several places at once (the dashboard,
+   * the mentor and the Today screen all ask for a day plan).
    */
   async transaction<T>(fn: (db: Database) => Promise<T> | T, label = 'tx'): Promise<T> {
     if (this.depth === 0) {
-      await this.driver.exec('BEGIN IMMEDIATE');
+      // Claim the connection *synchronously*, before the first await: two callers arriving in the
+      // same tick used to both observe depth 0 and both issue BEGIN, which SQLite rejects with
+      // "cannot start a transaction within a transaction".
       this.depth = 1;
       try {
+        await this.driver.exec('BEGIN IMMEDIATE');
         const result = await fn(this);
         await this.driver.exec('COMMIT');
         this.depth = 0;
@@ -115,6 +126,17 @@ export class Database {
       try { await this.driver.exec(`ROLLBACK TO SAVEPOINT ${name}`); await this.driver.exec(`RELEASE SAVEPOINT ${name}`); } catch { /* ignore */ }
       throw error;
     }
+  }
+
+  /**
+   * Serialise a composite operation (req. 8/9): calls run one after another in call order, and a
+   * failure never blocks the queue. The planner uses this because it is invoked from several
+   * screens and from the AI tools at the same time, and its work spans a whole transaction.
+   */
+  runExclusive<T>(fn: () => Promise<T> | T): Promise<T> {
+    const run = this.tail.then(() => fn(), () => fn());
+    this.tail = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   private async persistAfterCommit(): Promise<void> {

@@ -17,6 +17,8 @@
     "apps/server/test/**/*.ts",
     "apps/web/src/**/*.ts",
     "apps/web/src/**/*.tsx",
+    "apps/web/test/**/*.ts",
+    "apps/web/test/**/*.tsx",
     "scripts/**/*.mjs"
   ],
   "exclude": ["node_modules", "**/dist/**"]

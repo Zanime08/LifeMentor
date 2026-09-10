@@ -42,8 +42,9 @@ export function Today() {
     if (!app) return;
     setRebuilding(true);
     try {
+      // buildDay persists (one transaction) and returns the stored plan — persisting again here
+      // used to abort the save with a duplicate-key error on task history.
       const p = await app.services.planner.buildDay(day);
-      await app.services.planner.persist(p, day);
       try { await app.services.notifications.scheduleFromPlan(p); } catch { /* non-fatal */ }
       setPlan(p);
       await load();
@@ -61,7 +62,7 @@ export function Today() {
     setRebuilding(true);
     try {
       const p = await app.services.planner.rebuildRemainingDay();
-      await app.services.planner.persist(p, day);
+      try { await app.services.notifications.scheduleFromPlan(p); } catch { /* non-fatal */ }
       setPlan(p);
       await load();
       toast('Остаток дня пересобран: обязательства — прежде всего.', 'ok');

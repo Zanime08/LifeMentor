@@ -8,9 +8,9 @@
 | Persistence & crash safety | Vitest (file-backed SQLite, kill-mid-transaction, reopen) | CI |
 | Sync & conflicts | Vitest (two independent client DBs + one server DB, offline/online cycles) | CI |
 | AI orchestration | Vitest with a **deterministic scriptable provider** (mocks allowed in tests only, req. 95) | CI |
-| Planner | Vitest scenario table (normal / overloaded / event insertion / postponement / strict mode) | CI |
+| Planner | Vitest scenario table (`packages/core/test/planner.test.ts`): idempotent re-planning, event insertion, overloaded day, free-time protection, late-day rebuild, restart, concurrent callers | CI |
 | Server API | Vitest + Fastify `inject()` (auth, rate limit, sync, AI gateway, account deletion) | CI |
-| UI | Vitest + Testing Library (onboarding, dashboard, memory viewer) | CI |
+| UI | Vitest (jsdom) + Testing Library driving the **real client** — `App` + `AppProvider` + screens over a genuine `LifeMentorApp` on a temp SQLite file (`apps/web/test/ui-journey.test.tsx`): full first-run onboarding through the DOM, task create/complete, mentor chat with a real tool call, calendar event + planner safety net, restart with data intact | CI |
 | Packaging | Windows install/run smoke test, Android install/run smoke test | release machine |
 
 Command: `npm test` (all), `npm run test:core`, `npm run test:server`.

@@ -20,6 +20,24 @@ Consequences:
 * the UI only shows "saved" after COMMIT succeeds (`Result.ok`), never optimistically-without-record;
 * there is no "save everything at end of day" path anywhere in the codebase.
 
+**Concurrency contract.** There is one connection and therefore one transaction at a time.
+`db.transaction()` distinguishes two situations:
+
+* **nested** (a service calls another service that opens a transaction from the same operation) —
+  joins with `SAVEPOINT`, only the outermost `COMMIT` reaches the disk, so composite operations
+  stay atomic;
+* **concurrent** (two independent screens/tools fire work in the same tick) — this must not
+  happen: a joined transaction shares its owner's commit *and* rollback, so a failure in the owner
+  would discard a sibling's already-acknowledged writes. Composite or repeatedly-triggered
+  operations take a turn through `db.runExclusive()` (call order, failures never block the queue)
+  or a service-level lock — `PlannerService.buildDay()` is serialised this way because the
+  dashboard, the Today screen, onboarding and the mentor's `plan_day` tool can all request a plan
+  within the same second.
+
+`Database.transaction()` claims the connection *synchronously* before its first `await`; without
+that, two same-tick callers both observed "no transaction running" and SQLite answered the second
+`BEGIN` with `cannot start a transaction within a transaction`.
+
 ## 2. Crash recovery on startup (req. 13)
 
 `RecoveryService.startup()` runs before the first screen:

@@ -72,7 +72,12 @@ export function Mentor() {
   }, [app]);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+    const el = scrollRef.current;
+    if (!el) return;
+    // Guarded on purpose: a missing `Element.scrollTo` (older Android WebViews, non-browser DOM
+    // hosts) must never take down the chat screen — the rest of the app keeps working.
+    if (typeof el.scrollTo === 'function') el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    else el.scrollTop = el.scrollHeight;
   }, [messages, busy]);
 
   const send = async (text?: string) => {

@@ -34,6 +34,12 @@ export interface PlannerOptions {
   now?: Date;
   /** Skip persisting the plan to tasks (dry run / preview). */
   dryRun?: boolean;
+  /**
+   * Persist even when `now` is inside a `dryRun`. The plan computed with `{ now, dryRun: true }`
+   * is the exact one to persist later: rebuilding it without `now` at the end of the day would
+   * re-place tasks into the hours that are already gone. Used by adaptive rescheduling.
+   */
+  persist?: boolean;
   /** Extra tasks to consider (e.g. minimal versions offered by the mentor). */
   extraCandidates?: Task[];
 }
@@ -58,8 +64,20 @@ export class PlannerService {
 
   constructor(private readonly deps: PlannerDeps) {}
 
-  /** Build (and optionally persist) the plan for a day. */
+  /**
+   * Build (and persist) the plan for a day.
+   *
+   * Serialised on purpose: the dashboard, the Today screen, onboarding and the mentor's
+   * `plan_day` tool can all ask for a plan within the same second, and each build spans one
+   * write transaction. Queueing them keeps every caller's writes in its own transaction instead
+   * of silently joining someone else's (see `Database.transaction`'s concurrency contract).
+   */
   async buildDay(day: string = dayKey(), options: PlannerOptions = {}): Promise<DayPlan> {
+    return this.deps.repos.db.runExclusive(() => this.buildDayNow(day, options));
+  }
+
+  /** The actual build. Callers that already hold the planner's turn (rebuild) use this directly. */
+  private async buildDayNow(day: string = dayKey(), options: PlannerOptions = {}): Promise<DayPlan> {
     const { repos, calendar, tasks, learning, settings, personalization } = this.deps;
     const planning = await settings.get('planning');
     const learningSettings = await settings.get('learning');
@@ -111,7 +129,10 @@ export class PlannerService {
     const warnings: string[] = [];
 
     for (const scoredTask of scored) {
-      if (remainingCapacity <= 5) break;
+      if (remainingCapacity <= 5) {
+        deferred.push({ task_id: scoredTask.task.id, title: scoredTask.task.title, reason: 'today is full — the plan is capped by what the day physically holds' });
+        continue;
+      }
       const minutes = Math.min(scoredTask.minutes, remainingCapacity);
       if (minutes < 10) { deferred.push({ task_id: scoredTask.task.id, title: scoredTask.task.title, reason: 'less than 10 minutes of capacity left' }); continue; }
 
@@ -195,9 +216,13 @@ export class PlannerService {
       generated_at: nowIso(),
     };
 
-    if (!options.dryRun) await this.persist(plan, day);
+    // Persist first, inside the repository's transaction, and hand back the plan exactly as it
+    // was written: the deferred list stays truthful and every caller gets the same object, so
+    // nobody needs to write it a second time (double-persisting used to raise a primary-key
+    // error on `task_history` and abort the whole save).
+    const persisted = options.dryRun && !options.persist ? plan : await this.persist(plan, day);
     this.log.info('day plan built', { day, slots: slots.length, deferred: deferred.length, capacity, focusMinutes, overload });
-    return plan;
+    return persisted;
   }
 
   /**
@@ -207,27 +232,32 @@ export class PlannerService {
    */
   async rebuildRemainingDay(now: Date = new Date(), reason?: string): Promise<DayPlan> {
     const day = dayKey(now);
-    const { repos, tasks } = this.deps;
-    // Release slots of tasks that were scheduled later today but have not started.
-    const todays = await repos.tasks.find({ scheduled_date: day, status: { op: 'in', value: ['scheduled', 'postponed', 'todo'] } }, { limit: 200 });
+    const { repos } = this.deps;
+    // Release slots of tasks that were scheduled later today but have not started. Everything
+    // else that follows belongs to the same logical operation, so it goes through one
+    // transaction: a crash halfway through must not leave a half-released, half-re-planned day.
     const nowMinutes = now.getHours() * 60 + now.getMinutes();
-    await repos.db.transaction(async () => {
+    return repos.db.runExclusive(() => repos.db.transaction(async () => {
+      const todays = await repos.tasks.find({ scheduled_date: day, status: { op: 'in', value: ['scheduled', 'postponed', 'todo'] } }, { limit: 200 });
       for (const task of todays) {
         const start = task.scheduled_start ? timeToMinutes(task.scheduled_start) : null;
         if (start !== null && start >= nowMinutes) {
           await repos.tasks.update(task.id, { scheduled_start: null, scheduled_end: null, status: 'todo' } as never, { actor: 'system', reason: `schedule rebuilt${reason ? `: ${reason}` : ''}` });
         }
       }
-    });
-    const plan = await this.buildDay(day, { now });
-    if (reason) plan.warnings.unshift(`Rebuilt after: ${reason}`);
-    return plan;
+      // `now` *and* `persist`: the rebuilt plan is written inside this transaction, so the returned
+      // plan is the persisted one and callers must not persist it again.
+      const plan = await this.buildDayNow(day, { now, dryRun: true, persist: true });
+      if (reason) plan.warnings.unshift(`Rebuilt after: ${reason}`);
+      return plan;
+    }));
   }
 
   /** Write planned slots back onto tasks so they survive a restart and sync to other devices. */
-  async persist(plan: DayPlan, day: string, ctx: WriteContext = USER_WRITE): Promise<Task[]> {
+  async persist(plan: DayPlan, day: string, ctx: WriteContext = USER_WRITE): Promise<DayPlan> {
     const { repos } = this.deps;
-    const updated: Task[] = [];
+    const slots = [...plan.slots];
+    const deferred = [...plan.deferred];
     await repos.db.transaction(async () => {
       for (const slot of plan.slots) {
         if (slot.kind !== 'task' || !slot.taskId) continue;
@@ -240,18 +270,71 @@ export class PlannerService {
           status: 'scheduled',
         } as never, { ...ctx, reason: 'scheduled by daily planner' });
         if (next) {
-          updated.push(next);
-          await repos.taskHistory.insert({
-            id: `${slot.taskId}_${day}_planned`, task_id: slot.taskId, action: 'scheduled',
-            from_status: task.status, to_status: 'scheduled', reason: null,
-            note: `planner: ${slot.start}–${slot.end}`, actor: ctx.actor, at: nowIso(), created_at: nowIso(),
-          } as never);
+          // Keep the persisted plan honest: a slot whose task is no longer writable must not be
+          // shown as work that was placed.
+          const index = slots.findIndex((s) => s.taskId === slot.taskId);
+          if (index >= 0) slots[index] = { ...slots[index], start: slot.start, end: slot.end };
+          // One `scheduled` entry per task per day: rebuilding the schedule must never fail on a
+          // duplicate primary key, and must never spam the history with identical rows.
+          const historyId = `${slot.taskId}_${day}_planned`;
+          const existing = await repos.taskHistory.byId(historyId);
+          if (existing) {
+            await repos.taskHistory.update(historyId, {
+              from_status: task.status, to_status: 'scheduled', note: `planner: ${slot.start}–${slot.end}`, at: nowIso(),
+            } as never);
+          } else {
+            await repos.taskHistory.insert({
+              id: historyId, task_id: slot.taskId, action: 'scheduled',
+              from_status: task.status, to_status: 'scheduled', reason: null,
+              note: `planner: ${slot.start}–${slot.end}`, actor: ctx.actor, at: nowIso(), created_at: nowIso(),
+            } as never);
+          }
         }
       }
-      await repos.appState.update('last_day_plan', { value: JSON.stringify(plan), updated_at: nowIso() } as never)
-        .catch(async () => { await repos.appState.insert({ key: 'last_day_plan', value: JSON.stringify(plan), updated_at: nowIso() } as never); });
     });
-    return updated;
+    // Read back through the same planner so the UI, the AI context and the next restart all see
+    // the schedule that is actually in the database (a task can be completed while we write).
+    const stored = await this.snapshotFromDb(day, slots, deferred, plan);
+    await repos.db.transaction(async () => {
+      const value = JSON.stringify(stored);
+      const existing = await repos.appState.byId('last_day_plan');
+      if (existing) await repos.appState.update('last_day_plan', { value, updated_at: nowIso() } as never);
+      else await repos.appState.insert({ key: 'last_day_plan', value, updated_at: nowIso() } as never);
+    });
+    return stored;
+  }
+
+  /**
+   * Read the schedule back out of the database for one day. This is what the UI, the AI context
+   * and `planner.lastPlan()` show after a restart: the tasks that really carry a slot, not a
+   * cached copy that may have drifted (a task completed on another device, a manual edit).
+   */
+  private async snapshotFromDb(day: string, slots: PlannedSlot[], deferred: DayPlan['deferred'], base: DayPlan): Promise<DayPlan> {
+    const { repos } = this.deps;
+    const tasks = await repos.tasks.find(
+      { scheduled_date: day, status: { op: 'not_in', value: ['done', 'cancelled'] } },
+      { orderBy: { scheduled_start: 'asc' }, limit: 500 },
+    );
+    const placed = tasks.filter((t) => t.scheduled_start && t.scheduled_end);
+    const placedIds = new Set(placed.map((t) => t.id));
+    const kept = slots.filter((s) => s.kind !== 'task' || !s.taskId || placedIds.has(s.taskId));
+    for (const task of placed) {
+      if (kept.some((s) => s.taskId === task.id)) continue;
+      kept.push({
+        start: task.scheduled_start!, end: task.scheduled_end!, kind: 'task', title: task.title,
+        taskId: task.id, priority: task.priority, energy: task.energy,
+      });
+    }
+    const focus = kept.filter((s) => s.kind === 'task').reduce((acc, s) => acc + (timeToMinutes(s.end) - timeToMinutes(s.start)), 0);
+    const free = kept.filter((s) => s.kind === 'free').reduce((acc, s) => acc + (timeToMinutes(s.end) - timeToMinutes(s.start)), 0);
+    return {
+      ...base,
+      slots: kept.sort((a, b) => timeToMinutes(a.start) - timeToMinutes(b.start)),
+      deferred: deferred.filter((d) => !placedIds.has(d.task_id)),
+      focus_minutes: focus,
+      free_minutes: free,
+      generated_at: nowIso(),
+    };
   }
 
   async lastPlan(): Promise<DayPlan | null> {
