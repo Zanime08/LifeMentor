@@ -298,6 +298,25 @@ describe('first run in the browser client (dom, real engine)', () => {
     }, { timeout: 20_000 });
   }, 120_000);
 
+  it('tells the user which projects are at risk (req. 41)', async () => {
+    window.location.hash = '#/today';
+    render(<App />);
+    await waitFor(() => expect(openApp()).not.toBeNull(), { timeout: 30_000 });
+    // A project that cannot make its deadline: due in three days, nothing done yet.
+    await openApp()!.services.projects.create({
+      title: 'Собрать портфолио до конца недели',
+      deadline: dayKey(addDays(new Date(), 3)),
+      status: 'active',
+    });
+
+    window.location.hash = '#/projects';
+    expect(await screen.findByText(/Требуют внимания/, {}, { timeout: 30_000 })).toBeTruthy();
+    expect((await screen.findAllByText('Собрать портфолио до конца недели')).length).toBeGreaterThan(0);
+    // The reason is in the user's language, not the engine's: it says deadline and progress.
+    expect(await screen.findByText(/риск не успеть к дедлайну/, {}, { timeout: 20_000 })).toBeTruthy();
+    expect(await screen.findByText(/дедлайн \d{4}-\d{2}-\d{2} · готово 0%/, {}, { timeout: 20_000 })).toBeTruthy();
+  }, 120_000);
+
   it('drives the strategy ladder: add a direction, close it with a reason, keep the history (req. 45, 46, 79–81)', async () => {
     // The strategy engine (horizons, option comparison, immutable change history) had no screen at
     // all: implemented in phase 7 and unreachable from the UI. This walks the screen a user gets.

@@ -3,9 +3,29 @@ import type { Project, ProjectDetails, ProjectMilestone } from '@lifementor/core
 import { Btn, Card, Confirm, Empty, Field, I, Modal, PageHead, Progress, Select, Spinner, Tag, TextArea, TextInput } from '../components/ui';
 import { useApp } from '../state/store';
 
+/** Human wording for a project the engine flagged, built from the project itself (the engine's own
+ * reasons are English internal strings and are not shown to the user). */
+const HEALTH_RU: Record<string, string> = {
+  stalled: 'нет движения',
+  at_risk: 'риск не успеть к дедлайну',
+  blocked: 'заблокирован',
+  on_track: 'идёт по плану',
+};
+
+function attentionDetail(project: Project): string {
+  const progress = Math.round(Number(project.progress ?? 0));
+  if (project.health === 'blocked') return 'вы сами отметили его как заблокированный';
+  const last = project.last_activity_at ?? project.updated_at;
+  const idle = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86_400_000) : null;
+  if (project.health === 'stalled' && idle !== null) return `${idle} дн. без активности · готово ${progress}%`;
+  if (project.deadline) return `дедлайн ${project.deadline} · готово ${progress}%`;
+  return `готово ${progress}%`;
+}
+
 export function Projects() {
   const { app, version, mutate, toast, toastError } = useApp();
   const [projects, setProjects] = useState<Project[] | null>(null);
+  const [attention, setAttention] = useState<{ project: Project; reason: string }[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
   const [details, setDetails] = useState<ProjectDetails | null>(null);
   const [detailsTick, setDetailsTick] = useState(0);
@@ -16,6 +36,9 @@ export function Projects() {
     if (!app) return;
     let stop = false;
     app.services.projects.list().then((p) => { if (!stop) setProjects(p); }).catch(() => undefined);
+    // The engine has always known which projects are at risk (stalled / deadline / blocked) — it
+    // just never told anyone (req. 41). Asking it costs one assessment per project.
+    app.services.projects.needsAttention().then((a) => { if (!stop) setAttention(a); }).catch(() => undefined);
     return () => { stop = true; };
   }, [app, version]);
 
@@ -39,6 +62,23 @@ export function Projects() {
         <Empty icon={I.projects} title="Проектов пока нет"
           hint="Проект — это конкретная работа над целью: у неё есть вехи, дедлайн и связанный навык."
           action={<Btn kind="primary" size="sm" onClick={() => setCreating(true)}>Создать проект</Btn>} />
+      )}
+
+      {attention.length > 0 && (
+        <Card title={`Требуют внимания (${attention.length})`} sub="Проекты, которые движок считает рискованными: простой, близкий дедлайн или блокировка.">
+          {attention.map(({ project }) => (
+            <div key={project.id} className="row" style={{ gap: 8, padding: '5px 0', alignItems: 'flex-start' }}>
+              <Tag tone={project.health === 'blocked' ? 'p3' : project.health === 'at_risk' ? 'gold' : 'outline'}>
+                {HEALTH_RU[project.health ?? ''] ?? 'внимание'}
+              </Tag>
+              <div className="grow">
+                <span className="small">{project.title}</span>
+                <span className="xsmall muted"> · {attentionDetail(project)}</span>
+              </div>
+              <Btn size="xs" onClick={() => setOpenId(project.id)}>Открыть</Btn>
+            </div>
+          ))}
+        </Card>
       )}
 
       <div className="grid cols-2">

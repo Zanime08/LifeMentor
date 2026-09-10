@@ -234,9 +234,12 @@ export class ProjectService {
     const out: { project: Project; reason: string }[] = [];
     for (const project of projects) {
       const health = await this.assessHealth(project.id);
-      if (health === 'stalled') out.push({ project, reason: `No activity for ${STALL_DAYS}+ days` });
-      else if (health === 'at_risk') out.push({ project, reason: `Deadline ${project.deadline} with ${Math.round(Number(project.progress))}% done` });
-      else if (health === 'blocked') out.push({ project, reason: 'Marked as blocked' });
+      // Return the state we just assessed: the row in `projects` was read before it was updated, so
+      // handing it back unchanged made every caller see a stale (often null) health.
+      const assessed: Project = { ...project, health };
+      if (health === 'stalled') out.push({ project: assessed, reason: `No activity for ${STALL_DAYS}+ days` });
+      else if (health === 'at_risk') out.push({ project: assessed, reason: `Deadline ${project.deadline} with ${Math.round(Number(project.progress))}% done` });
+      else if (health === 'blocked') out.push({ project: assessed, reason: 'Marked as blocked' });
     }
     return out;
   }
