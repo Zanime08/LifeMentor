@@ -1,5 +1,6 @@
 import { loadConfig, ConfigError, hasCloudAI } from './config';
-import { loadDotEnv } from './dotenv';
+import { hasEnvFile, loadDotEnv } from './dotenv';
+import { initEnv } from './tools/init-env';
 import { buildServer } from './app';
 
 /**
@@ -8,6 +9,20 @@ import { buildServer } from './app';
  * Deployment is a single Node service — no Docker for the operator, none for the user (docs/08 §8).
  */
 async function main(): Promise<void> {
+  // A machine that was never configured configures itself: without a stable identity every restart
+  // would invalidate sessions and every push subscription. The file is written only when the
+  // operator has provided nothing at all (no JWT_SECRET in the environment and no .env where the
+  // loader looks), so an existing configuration is never touched.
+  if (process.env.NODE_ENV !== 'test' && !process.env.JWT_SECRET && !hasEnvFile()) {
+    try {
+      const created = initEnv(process.cwd());
+      if (created.created) {
+        process.stdout.write(`LifeMentor server: wrote ${created.path} with a stable JWT secret and VAPID key pair.\n`);
+      }
+    } catch (error) {
+      process.stderr.write(`LifeMentor server: could not write .env (${error instanceof Error ? error.message : String(error)}) — continuing with a throwaway identity\n`);
+    }
+  }
   // Operator-side .env (cwd) — shell environment always takes priority.
   loadDotEnv();
   let config;

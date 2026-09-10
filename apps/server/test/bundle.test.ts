@@ -1,10 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { generateVapidKeys } from '../src/config';
 
 /**
  * Phase gate for the release bundle (req. 3, 96): the artifact that ships on a Windows machine
@@ -18,10 +17,14 @@ import { generateVapidKeys } from '../src/config';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const serverRoot = resolve(here, '..');
-const bundle = join(serverRoot, 'dist', 'main.mjs');
+const built = join(serverRoot, 'dist', 'main.mjs');
 const dir = mkdtempSync(join(tmpdir(), 'lifementor-bundle-'));
-const port = 19000 + Math.floor(Math.random() * 900);
-const base = `http://127.0.0.1:${port}`;
+/** Exactly what the release archive contains: the bundle on its own, outside any repository. */
+const shipped = join(dir, 'server', 'lifementor-server.mjs');
+/** A machine that has never run the server before — empty working directory. */
+const workDir = join(dir, 'work');
+let port = 19000 + Math.floor(Math.random() * 900);
+let base = `http://127.0.0.1:${port}`;
 
 let child: ChildProcess | null = null;
 let output = '';
@@ -54,41 +57,44 @@ async function waitForHealth(timeoutMs = 30_000): Promise<Record<string, unknown
   throw new Error(`server did not become healthy (${lastError})\n${output}`);
 }
 
-beforeAll(async () => {
-  // Build exactly the way `npm run build:server` does, then start the bundle as an operator would.
-  await run(process.execPath, ['build.mjs'], { cwd: serverRoot });
-  mkdirSync(join(dir, 'data'), { recursive: true });
-  const vapid = generateVapidKeys();
-  child = spawn(process.execPath, [bundle], {
-    cwd: dir,
-    env: {
-      ...process.env,
-      NODE_ENV: 'production',
-      PORT: String(port),
-      DATABASE_PATH: join(dir, 'data', 'server.sqlite'),
-      JWT_SECRET: 'bundle-test-secret-0123456789abcdef',
-      VAPID_PUBLIC_KEY: vapid.public_key,
-      VAPID_PRIVATE_KEY: vapid.private_key,
-      VAPID_SUBJECT: 'mailto:test@localhost',
-      LOG_LEVEL: 'silent',
-    },
-    stdio: 'pipe',
-  });
+function start(env: NodeJS.ProcessEnv): void {
+  // The child must be a *fresh machine*: whatever the test runner happens to have in its
+  // environment (or a .env it loaded for another test) must not leak into it.
+  const base: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of ['JWT_SECRET', 'VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'DATABASE_PATH', 'NODE_ENV']) delete base[key];
+  child = spawn(process.execPath, [shipped], { cwd: workDir, env: { ...base, ...env }, stdio: 'pipe' });
   child.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
   child.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+}
+
+async function stop(): Promise<void> {
+  if (!child || child.exitCode !== null) return;
+  child.kill('SIGTERM');
+  await new Promise((r) => setTimeout(r, 400));
+  if (child.exitCode === null) child.kill('SIGKILL');
+  child = null;
+}
+
+/**
+ * A machine that was never configured: no JWT_SECRET, no VAPID pair, no .env anywhere near the
+ * bundle. The server must write its own identity file and come up healthy — this is the artefact
+ * an end user downloads, and they will not run a key-generation command.
+ */
+beforeAll(async () => {
+  await run(process.execPath, ['build.mjs'], { cwd: serverRoot });
+  mkdirSync(dirname(shipped), { recursive: true });
+  mkdirSync(workDir, { recursive: true });
+  copyFileSync(built, shipped);
+  start({ NODE_ENV: 'production', PORT: String(port), LOG_LEVEL: 'silent' });
 }, 120_000);
 
 afterAll(async () => {
-  if (child && child.exitCode === null) {
-    child.kill('SIGTERM');
-    await new Promise((r) => setTimeout(r, 500));
-    if (child.exitCode === null) child.kill('SIGKILL');
-  }
+  await stop();
   rmSync(dir, { recursive: true, force: true });
 });
 
 describe('production server bundle', () => {
-  it('boots from dist/main.mjs and serves a healthy, real API', async () => {
+  it('configures itself on a machine that has never been set up, then serves the API', async () => {
     const health = await waitForHealth();
     expect(health.ok).toBe(true);
     expect(health.version).toBeTruthy();
@@ -112,5 +118,27 @@ describe('production server bundle', () => {
 
     const status = await fetch(`${base}/v1/sync/status`, { headers: { authorization: `Bearer ${session.access_token}` } });
     expect(status.status).toBe(200);
+
+    // The identity file was written next to the running server, with the two secrets that must
+    // stay stable across restarts (sessions and push subscriptions depend on them).
+    const envFile = join(workDir, '.env');
+    expect(existsSync(envFile)).toBe(true);
+    const env = readFileSync(envFile, 'utf8');
+    expect(env).toMatch(/JWT_SECRET=[0-9a-f]{32,}/);
+    expect(env).toMatch(/VAPID_PUBLIC_KEY=\S+/);
+    expect(env).toMatch(/VAPID_PRIVATE_KEY=\S+/);
+  }, 60_000);
+
+  it('keeps the identity across a restart (sessions survive, no second .env)', async () => {
+    const envFile = join(workDir, '.env');
+    const before = readFileSync(envFile, 'utf8');
+    await stop();
+
+    port = 19000 + Math.floor(Math.random() * 900);
+    base = `http://127.0.0.1:${port}`;
+    start({ NODE_ENV: 'production', PORT: String(port), LOG_LEVEL: 'silent' });
+    const health = await waitForHealth();
+    expect(health.ok).toBe(true);
+    expect(readFileSync(envFile, 'utf8')).toBe(before);
   }, 60_000);
 });

@@ -130,26 +130,29 @@ above.
 
 ## Running the server on your own machine (Windows)
 
-The clients only need a server URL; one machine on the same network can host it. Three steps on
-that machine, all PowerShell/cmd — no Docker, no database install:
+The clients only need a server URL; one machine on the same network can host it. The build output
+is a **single self-contained file** (`release/server/lifementor-server.mjs`, ~2 MB) — no Docker, no
+database install, no `node_modules`, no key generation:
 
 ```bat
-npm install
-npm run init:env        :: once: writes .env with a stable JWT secret + VAPID key pair
-npm run build:server    :: bundles apps/server/dist/main.mjs
-install-autostart.ps1   :: optional: starts the server at logon, hidden, logging to server.log
-:: or: server.bat      :: foreground window, close it to stop
+npm run package:server      :: → release/server/{lifementor-server.mjs, README.txt, server.bat, install-autostart.ps1}
+npm run init:env            :: optional for the repo itself: writes a root .env (see below)
+install-autostart.ps1       :: from the archive: starts the server at logon, hidden, logging to server.log
+:: or: server.bat          :: foreground window, close it to stop
 ```
 
-`init:env` is what makes the server *stable*: without a `.env` the server runs in development
-mode, where the JWT secret and the VAPID pair are regenerated on every launch — meaning every
-session and every Web Push subscription dies on restart. It never overwrites an existing `.env`,
-so it is safe to run again after an update. Provider API keys are **not** invented by the tool;
-add them (or configure them in the app's Settings → AI) to enable cloud models — the local
-heuristics work without any keys.
+On its **first start the server configures itself**: if nothing is configured it writes `.env` next
+to itself with a random `JWT_SECRET` and a VAPID key pair. That is what makes the server *stable* —
+without it the secrets are regenerated on every launch, so every session and every Web Push
+subscription dies on restart. The file is an identity: keep it, back it up, copy it with the data.
+An existing `.env` (or the same variables in the OS environment) is never overwritten, and the
+repository's own workflow keeps its `.env` in the repo root via `npm run init:env`.
 
-Check it with `http://localhost:8787/v1/health` (`ok: true`, `integrity.ok: true`, and the
-provider list showing which cloud keys are present).
+Provider API keys are **not** invented by any of this; add `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` /
+`GOOGLE_API_KEY` to the `.env` (or configure them in the app's Settings → AI) to enable cloud models
+— the local heuristics work without any keys and the health endpoint says which are present.
+
+Check it with `http://localhost:8787/v1/health` (`ok: true`, `integrity.ok: true`).
 
 ## Icons
 

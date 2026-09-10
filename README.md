@@ -52,15 +52,17 @@ docs/            Проектирование: продуктовая специ
 
 ```bash
 npm install            # зависимости (workspace: core, server, web, mobile, desktop)
-npm test               # 154 автотеста (core + server + web bootstrap + UI-сквозные сценарии
+npm test               # 157 автотестов (core + server + web bootstrap + UI-сквозные сценарии
                        # + контракты драйверов Tauri/Capacitor)
 
 npm run dev --workspace @lifementor/server   # API на :8787
 npm run dev --workspace @lifementor/web      # веб-приложение на :5173 (прокси /v1 → :8787)
 
-npm run init:env       # один раз: .env со стабильными JWT-секретом и VAPID-ключом
-                       # (без него сессии и push-подписки сбрасываются при каждом перезапуске)
-npm run build:server   # прод-бандл сервера → apps/server/dist/main.mjs
+npm run init:env       # один раз (для репозитория): .env со стабильными JWT-секретом и
+                       # VAPID-ключом — иначе сессии и push-подписки сбрасываются при перезапуске
+                       # (сам сервер тоже умеет это: на «чистой» машине он создаёт .env сам)
+npm run package:server # самодостаточный архив сервера → release/server
+                       # (один .mjs ~2 МБ без node_modules + server.bat + autostart + README)
 ```
 
 Откройте http://localhost:5173 → регистрация → onboarding (опросник → адаптивное интервью →

@@ -31,7 +31,8 @@
     "shell:windows": "npm run build --workspace @lifementor/desktop",
     "clean": "node scripts/clean.mjs",
     "build:server": "npm run build --workspace @lifementor/server",
-    "init:env": "npm run init:env --workspace @lifementor/server"
+    "init:env": "npm run init:env --workspace @lifementor/server",
+    "package:server": "npm run build:server && node scripts/package-server.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

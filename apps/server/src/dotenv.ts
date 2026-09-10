@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { SERVER_ROOT } from './paths';
 
@@ -35,6 +35,24 @@ export function loadDotEnv(cwd?: string): number {
     return parseDotEnvText(text);
   }
   return 0;
+}
+
+/**
+ * Is there a `.env` anywhere the loader would look (cwd, then the repository root)?
+ *
+ * Used by the self-initialising server: a machine that has never been configured gets one written
+ * for it, while an operator's existing file — in either location — is never touched.
+ */
+export function hasEnvFile(cwd?: string): boolean {
+  const dirs = cwd !== undefined ? [cwd] : [process.cwd(), SERVER_ROOT];
+  const seen = new Set<string>();
+  for (const dir of dirs) {
+    const d = resolve(dir);
+    if (seen.has(d)) continue;
+    seen.add(d);
+    if (existsSync(resolve(d, '.env'))) return true;
+  }
+  return false;
 }
 
 function parseDotEnvText(text: string): number {

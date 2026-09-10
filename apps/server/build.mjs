@@ -5,16 +5,17 @@ import path from 'node:path';
 /**
  * Production bundle: `npm run build --workspace @lifementor/server` → `dist/main.mjs`.
  *
- * `@lifementor/core` is compiled *into* the bundle (its package entry point is TypeScript source,
- * which Node cannot run directly), while third-party packages stay external and ship as
- * `node_modules` — that keeps Fastify's plugin loading and any optional native dependency intact.
+ * Everything goes into the bundle — the engine (`@lifementor/core`) and every dependency, Fastify
+ * and zod included. The result is the single file a user extracts from `release/server` and starts
+ * with `node lifementor-server.mjs`: no `node_modules`, no `npm install`, nothing to configure
+ * (the server writes its own `.env` on first start, see `src/tools/init-env.ts`).
+ *
+ * `npm run package:server` turns the bundle into that user-facing archive.
  */
 const here = path.dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = path.resolve(here, '../..');
 
-const external = [
-  'fastify', '@fastify/cors', '@fastify/jwt', '@fastify/rate-limit', '@fastify/static', 'zod',
-];
+const external = []; // deliberately empty: the archive must run on a machine with no dependencies
 
 await build({
   entryPoints: [path.join(here, 'src/main.ts')],
