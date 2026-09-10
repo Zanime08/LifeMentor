@@ -47,6 +47,22 @@ jobs:
             test-results
             playwright-report
 
+  client-bundle:
+    name: Client bundle (credential scan)
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build the client exactly as the shells consume it
+        run: npm run build --workspace @lifementor/web
+      - name: Fail if any credential reached the bundle
+        run: npm run check:client-secrets
+
   server:
     name: Server bundle (self-hosted)
     needs: tests
@@ -189,6 +205,8 @@ jobs:
               -PRELEASE_KEY_PASSWORD="$RELEASE_KEY_PASSWORD"
           } 2>&1 | tee android-build.log
           exit ${PIPESTATUS[0]}
+      - name: Fail if any credential reached the APK's web assets
+        run: npm run check:client-secrets
         env:
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD || 'lifementor' }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS || 'lifementor' }}
