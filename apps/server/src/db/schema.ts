@@ -108,4 +108,92 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_event ON audit_log(event, created_at);
+
+-- News engine (server side): fetched RSS feeds are parsed, de-duplicated and stored
+-- here so every client can pull a structured, offline-capable feed (docs/08 §4).
+-- This is public information, not user data — but it is still versioned like the rest.
+CREATE TABLE IF NOT EXISTS news_sources (
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  url             TEXT NOT NULL UNIQUE,
+  category        TEXT NOT NULL,
+  kind            TEXT NOT NULL DEFAULT 'rss',
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  etag            TEXT,
+  last_fetched_at TEXT,
+  last_error      TEXT,
+  created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS news_cache (
+  url_hash        TEXT PRIMARY KEY,
+  source_id       TEXT REFERENCES news_sources(id) ON DELETE SET NULL,
+  title           TEXT NOT NULL,
+  url             TEXT NOT NULL,
+  summary         TEXT,
+  what_happened   TEXT,
+  why_it_matters  TEXT,
+  context         TEXT,
+  impact          TEXT,
+  category        TEXT NOT NULL,
+  urgency         TEXT NOT NULL DEFAULT 'digest',
+  published_at    TEXT,
+  fetched_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_news_cache_pub ON news_cache(published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_news_cache_cat ON news_cache(category, published_at DESC);
+
+-- Push notifications (docs/08 §5). Subscriptions hold the Web Push endpoint (+ future
+-- FCM tokens) and the per-user delivery queue: everything the server creates is stored
+-- here first, so a notification that cannot be pushed (app closed, device offline) is
+-- still picked up by polling GET /v1/notifications/pending on the next foreground.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  device_id    TEXT NOT NULL,
+  kind         TEXT NOT NULL DEFAULT 'web',   -- web | fcm
+  endpoint     TEXT NOT NULL,                 -- Web Push endpoint / FCM registration token
+  p256dh       TEXT,
+  auth_secret  TEXT,
+  user_agent   TEXT,
+  last_error   TEXT,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  UNIQUE (user_id, endpoint)
+);
+CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions(user_id);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  type         TEXT NOT NULL,                 -- daily_plan | schedule_start | task_reminder | …
+  title        TEXT NOT NULL,
+  body         TEXT,
+  url          TEXT,
+  data         TEXT,                          -- JSON payload for the service worker
+  urgent       INTEGER NOT NULL DEFAULT 0,
+  dedup_key    TEXT,
+  push_sent_at TEXT,
+  push_error   TEXT,
+  delivered_at TEXT,
+  created_at   TEXT NOT NULL,
+  expires_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_pending ON notifications(user_id, delivered_at, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_dedup ON notifications(user_id, dedup_key, created_at DESC);
+
+-- Cloud backup slot (docs/08 §1): ONE latest backup per user. The blob is ENCRYPTED ON THE
+-- CLIENT (AES-GCM, device key in OS secure storage / browser storage) — the server stores only
+-- ciphertext it cannot read, plus a checksum computed for integrity verification (req. 70).
+CREATE TABLE IF NOT EXISTS cloud_backups (
+  user_id      TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+  blob         BLOB NOT NULL,
+  size_bytes   INTEGER NOT NULL,
+  checksum     TEXT NOT NULL,          -- sha256 hex, verified on upload and download
+  format       TEXT,                   -- e.g. 'lifementor-archive/v1'
+  created_at   TEXT NOT NULL,          -- when the backup was made on the client
+  uploaded_at  TEXT NOT NULL,
+  device_id    TEXT,
+  note         TEXT
+);
 `;

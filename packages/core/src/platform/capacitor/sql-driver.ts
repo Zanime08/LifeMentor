@@ -1,30 +1,32 @@
 import type { DriverOptions, RunResult, SqlDriver, SqlParam } from '../../db/driver';
+import { durabilityPragmas } from '../../db/driver';
 
 /**
- * Android driver — wraps `@capacitor-community/sqlite`, i.e. the platform SQLite
- * (WAL enabled, real transactions) inside the Capacitor shell (`apps/mobile`).
+ * Android driver — wraps `@capacitor-community/sqlite` v8 (platform SQLite,
+ * WAL enabled, real transactions) inside the Capacitor shell (`apps/mobile`).
  *
- * The plugin is resolved lazily so the core package builds and tests without it installed.
+ * The v8 plugin exposes a flat, options-object API (`run({database, statement, values})`).
+ * The plugin instance is injected by the shell (`options.plugin`) so a Vite-bundled
+ * app resolves it deterministically; when omitted the driver falls back to a runtime
+ * `import('@capacitor-community/sqlite')` for non-bundled runtimes.
+ *
+ * Transaction semantics (mirrors the other drivers):
+ *  - `exec` runs raw statement batches with `transaction: false` — this is how the
+ *    Database layer issues BEGIN IMMEDIATE / COMMIT and the open-time pragmas
+ *    (`journal_mode` must run outside a transaction);
+ *  - `run` (single statement) keeps the plugin's per-call transaction — every write
+ *    is committed to disk immediately (req. 8).
  */
-interface CapacitorSqliteStatementLike {
-  // The plugin returns plain objects for queries; we only need the shapes below.
-  values?: Record<string, unknown>[];
-  changes?: { changes?: number; last_insert_rowid?: number };
-}
 
-interface CapacitorSqliteDb {
-  execute(statements: string, transaction?: boolean): Promise<{ changes?: { changes?: number; last_insert_rowid?: number } }>;
-  run(statement: string, values?: SqlParam[], transaction?: boolean): Promise<{ changes?: { changes?: number; last_insert_rowid?: number } }>;
-  query(statement: string, values?: SqlParam[]): Promise<{ values?: Record<string, unknown>[] }>;
-  close(): Promise<void>;
-}
-
-interface CapacitorSqlitePlugin {
-  createConnection(database: string, encrypted: boolean, mode: string, version: number, encryptedSecret?: string): Promise<CapacitorSqliteDb>;
-  retrieveConnection(database: string): Promise<CapacitorSqliteDb>;
-  isConnection(database: string): Promise<{ result?: boolean }>;
-  closeConnection(database: string): Promise<void>;
-  deleteDatabase(database: string): Promise<void>;
+/** Minimal structural view of `@capacitor-community/sqlite` v8 (options-object API). */
+export interface CapacitorSqlitePlugin {
+  createConnection(options: { database?: string; version?: number; encrypted?: boolean; mode?: string; readonly?: boolean }): Promise<void>;
+  isDatabase(options: { database?: string }): Promise<{ result?: boolean }>;
+  open(options: { database?: string }): Promise<void>;
+  close(options: { database?: string }): Promise<void>;
+  execute(options: { database?: string; statements?: string; transaction?: boolean }): Promise<unknown>;
+  run(options: { database?: string; statement?: string; values?: unknown[]; transaction?: boolean }): Promise<{ changes?: { changes?: number; lastId?: number | bigint } }>;
+  query(options: { database?: string; statement?: string; values?: unknown[] }): Promise<{ values?: Record<string, unknown>[] }>;
 }
 
 async function loadPlugin(): Promise<CapacitorSqlitePlugin> {
@@ -36,54 +38,76 @@ async function loadPlugin(): Promise<CapacitorSqlitePlugin> {
   throw new Error('Capacitor SQLite plugin is not available — the Android shell must provide @capacitor-community/sqlite');
 }
 
+export interface CapacitorSqlDriverOptions extends DriverOptions {
+  /**
+   * Injected `@capacitor-community/sqlite` plugin instance. The Capacitor shell passes its own
+   * statically-imported instance so a bundled (Vite) app resolves it deterministically. When
+   * omitted the driver falls back to a runtime `import('@capacitor-community/sqlite')`.
+   */
+  plugin?: CapacitorSqlitePlugin;
+}
+
 export class CapacitorSqlDriver implements SqlDriver {
   readonly kind = 'capacitor' as const;
   private plugin: CapacitorSqlitePlugin | null = null;
-  private db: CapacitorSqliteDb | null = null;
   private readonly dbName: string;
 
-  constructor(private readonly options: DriverOptions = {}) {
+  constructor(private readonly options: CapacitorSqlDriverOptions = {}) {
     this.dbName = options.inMemory ? 'lifementor_test' : (options.path ?? 'lifementor').replace(/\.sqlite$/, '');
   }
 
-  get isOpen(): boolean { return this.db !== null; }
+  get isOpen(): boolean { return this.opened; }
+  private opened = false;
 
   describe(): string { return `capacitor:${this.dbName}`; }
 
+  private async handle(): Promise<CapacitorSqlitePlugin> {
+    if (!this.opened) throw new Error('CapacitorSqlDriver: database is not open');
+    if (!this.plugin) this.plugin = this.options.plugin ?? (await loadPlugin());
+    return this.plugin;
+  }
+
   async open(): Promise<void> {
-    if (this.db) return;
-    this.plugin = await loadPlugin();
-    const existing = await this.plugin.isConnection(this.dbName);
-    this.db = existing.result
-      ? await this.plugin.retrieveConnection(this.dbName)
-      : await this.plugin.createConnection(this.dbName, false, 'no-encryption', 1);
-    // WAL + foreign keys + busy timeout are applied by the plugin/SQLite; assert the ones we need.
-    await this.db.execute('PRAGMA foreign_keys = ON;', false);
+    if (this.opened) return;
+    const plugin = this.options.plugin ?? (await loadPlugin());
+    const existing = await plugin.isDatabase({ database: this.dbName });
+    if (!existing.result) {
+      await plugin.createConnection({ database: this.dbName, encrypted: false, mode: 'no-encryption', version: 1 });
+    }
+    await plugin.open({ database: this.dbName });
+    // Same pragmas as the node/wasm drivers — WAL, synchronous, FK, busy timeout (docs/03 §1).
+    // journal_mode must run outside a transaction → transaction: false.
+    for (const pragma of durabilityPragmas(this.options.durability, this.options.busyTimeoutMs)) {
+      await plugin.execute({ database: this.dbName, statements: pragma, transaction: false });
+    }
+    this.plugin = plugin;
+    this.opened = true;
   }
 
   async close(): Promise<void> {
-    if (!this.db || !this.plugin) return;
-    await this.plugin.closeConnection(this.dbName);
-    this.db = null;
-  }
-
-  private handle(): CapacitorSqliteDb {
-    if (!this.db) throw new Error('CapacitorSqlDriver: database is not open');
-    return this.db;
+    if (!this.opened || !this.plugin) return;
+    await this.plugin.close({ database: this.dbName });
+    this.opened = false;
   }
 
   async exec(sql: string): Promise<void> {
-    await this.handle().execute(ensureTerminator(sql), false);
+    const plugin = await this.handle();
+    await plugin.execute({ database: this.dbName, statements: ensureTerminator(sql), transaction: false });
   }
 
   async run(sql: string, params: SqlParam[] = []): Promise<RunResult> {
-    const result = await this.handle().run(sql, normalize(params), false);
-    return { changes: Number(result?.changes?.changes ?? 0), lastInsertRowid: Number(result?.changes?.last_insert_rowid ?? 0) };
+    const plugin = await this.handle();
+    const result = await plugin.run({ database: this.dbName, statement: sql, values: normalize(params) });
+    return {
+      changes: Number(result?.changes?.changes ?? 0),
+      lastInsertRowid: Number(result?.changes?.lastId ?? 0),
+    };
   }
 
   async all<T = Record<string, unknown>>(sql: string, params: SqlParam[] = []): Promise<T[]> {
-    const result: CapacitorSqliteStatementLike = await this.handle().query(sql, normalize(params));
-    return ((result?.values ?? []) as T[]);
+    const plugin = await this.handle();
+    const result = await plugin.query({ database: this.dbName, statement: sql, values: normalize(params) });
+    return (result?.values ?? []) as T[];
   }
 
   async get<T = Record<string, unknown>>(sql: string, params: SqlParam[] = []): Promise<T | undefined> {
@@ -103,7 +127,7 @@ export class CapacitorSqlDriver implements SqlDriver {
   }
 }
 
-function normalize(params: SqlParam[]): SqlParam[] {
+function normalize(params: SqlParam[]): unknown[] {
   return params.map((p) => {
     if (p === undefined) return null;
     if (typeof p === 'boolean') return p ? 1 : 0;

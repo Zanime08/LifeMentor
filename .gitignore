@@ -33,8 +33,9 @@ npm-debug.log*
 
 # --- platform build artifacts ---
 apps/desktop/src-tauri/target/
-apps/mobile/android/
-apps/mobile/.gradle/
+apps/mobile/android/.gradle/
+apps/mobile/android/**/build/
+apps/mobile/android/local.properties
 *.apk
 *.aab
 *.msi

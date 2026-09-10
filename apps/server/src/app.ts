@@ -10,6 +10,9 @@ import { registerAuth } from './http/auth';
 import { registerAuthRoutes } from './routes/auth';
 import { registerSyncRoutes } from './routes/sync';
 import { registerAiRoutes } from './routes/ai';
+import { registerNewsRoutes } from './routes/news';
+import { registerNotificationRoutes } from './routes/notifications';
+import { registerBackupRoutes } from './routes/backup';
 import { registerMetaRoutes } from './routes/meta';
 import type { ServerDb } from './db';
 import type { JwtSigner } from './services/tokens';
@@ -93,6 +96,9 @@ export async function buildServer(config: ServerConfig, options: BuildOptions = 
   await registerAuthRoutes(app, context);
   await registerSyncRoutes(app, context);
   await registerAiRoutes(app, context);
+  registerNewsRoutes(app, context);
+  registerNotificationRoutes(app, context);
+  registerBackupRoutes(app, context);
 
   app.addHook('onClose', async () => { await context.close(); });
 

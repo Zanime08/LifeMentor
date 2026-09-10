@@ -1,4 +1,5 @@
 import { loadConfig, ConfigError, hasCloudAI } from './config';
+import { loadDotEnv } from './dotenv';
 import { buildServer } from './app';
 
 /**
@@ -7,6 +8,8 @@ import { buildServer } from './app';
  * Deployment is a single Node service — no Docker for the operator, none for the user (docs/08 §8).
  */
 async function main(): Promise<void> {
+  // Operator-side .env (cwd) — shell environment always takes priority.
+  loadDotEnv();
   let config;
   try {
     config = loadConfig();
@@ -25,6 +28,9 @@ async function main(): Promise<void> {
   }
   if (!hasCloudAI(config)) {
     app.log.warn('No OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY — the AI gateway serves the local heuristic provider');
+  }
+  if (config.push.vapidPublicGenerated) {
+    app.log.warn('VAPID key pair was generated for this run only — set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY so push subscriptions survive a restart (npm run vapid:keys)');
   }
 
   const address = await app.listen({ host: config.host, port: config.port });

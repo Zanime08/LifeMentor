@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { randomBytes } from 'node:crypto';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { SERVER_ROOT } from './paths';
 
 /**
  * Server configuration (docs/08 §2, §3, §8).
@@ -19,7 +22,9 @@ const ConfigSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   HOST: z.string().default('0.0.0.0'),
   PORT: numberish(8787),
-  DATABASE_PATH: z.string().default('data/server.sqlite'),
+  // Absolute by default: npm runs workspace scripts with cwd = apps/server, so a
+  // relative default would silently put the database in the wrong folder.
+  DATABASE_PATH: z.string().default(resolve(SERVER_ROOT, 'data', 'server.sqlite')),
   DATABASE_IN_MEMORY: booleanish.default(false),
 
   JWT_SECRET: z.string().min(16).optional(),
@@ -42,6 +47,24 @@ const ConfigSchema = z.object({
   AI_MODEL_STRONG: z.string().optional(),
   AI_DAILY_TOKEN_BUDGET: numberish(400_000),
   AI_MAX_INPUT_CHARS: numberish(200_000),
+
+  // Web Push (docs/08 §5): VAPID key pair. In development a throwaway pair is generated
+  // per run (and the log says so); set stable keys for production so subscriptions survive
+  // a restart (generate: npm run vapid:keys --workspace @lifementor/server).
+  VAPID_PUBLIC_KEY: z.string().optional(),
+  VAPID_PRIVATE_KEY: z.string().optional(),
+  VAPID_SUBJECT: z.string().default('mailto:dev@lifementor.local'),
+  /** Max important-news pushes per user per day — a hard anti-spam cap (req. 86). */
+  NEWS_PUSH_DAILY_CAP: numberish(3),
+
+  // FCM (Android push, docs/08 §5 / docs/11 §8): Firebase service account that signs FCM v1
+  // API calls. Either point FIREBASE_SERVICE_ACCOUNT_FILE at the key JSON downloaded from the
+  // Firebase console, or set the three values separately. Unset → FCM is off and `fcm`
+  // subscriptions are still delivered by the polling path (honest push_error, never fake).
+  FIREBASE_SERVICE_ACCOUNT_FILE: z.string().optional(),
+  FIREBASE_PROJECT_ID: z.string().optional(),
+  FIREBASE_CLIENT_EMAIL: z.string().optional(),
+  FIREBASE_PRIVATE_KEY: z.string().optional(),
 
   // rate limits (per IP, per window)
   RATE_LIMIT_WINDOW_MS: numberish(60_000),
@@ -76,9 +99,31 @@ export interface ServerConfig {
     maxInputChars: number;
   };
   rateLimit: { windowMs: number; auth: number; sync: number; ai: number; general: number };
+  push: {
+    vapidPublicKey: string | null;
+    vapidPrivateKey: string | null;
+    vapidPublicGenerated: boolean;
+    vapidSubject: string;
+    newsDailyCap: number;
+    /** FCM (Android) credentials — null when no service account is configured (FCM off). */
+    fcm: { projectId: string; clientEmail: string; privateKey: string } | null;
+  };
 }
 
 export class ConfigError extends Error {}
+
+/**
+ * Generate a VAPID P-256 key pair the same way `web-push` does: the public key is the
+ * uncompressed point (0x04 ‖ X ‖ Y, 65 bytes) in base64url, the private key the scalar `d`.
+ * Both formats are what `web-push.setVapidDetails` validates and what
+ * `PushManager.subscribe({ applicationServerKey })` expects in the browser.
+ */
+export function generateVapidKeys(): { public_key: string; private_key: string } {
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const jwk = privateKey.export({ format: 'jwk' }) as { x: string; y: string; d: string };
+  const pub = Buffer.concat([Buffer.from([0x04]), Buffer.from(jwk.x, 'base64url'), Buffer.from(jwk.y, 'base64url')]);
+  return { public_key: pub.toString('base64url'), private_key: Buffer.from(jwk.d, 'base64url').toString('base64url') };
+}
 
 /** Parse and validate the environment. Throws `ConfigError` with a readable message. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -98,6 +143,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     jwtSecret = randomBytes(48).toString('base64url');
     generated = true;
   }
+
+  // VAPID: a stable pair is needed for subscriptions to survive a restart. In development a
+  // throwaway pair is generated per run (and main.ts logs that); in production both are required.
+  let vapidPublic = raw.VAPID_PUBLIC_KEY ?? '';
+  let vapidPrivate = raw.VAPID_PRIVATE_KEY ?? '';
+  let vapidGenerated = false;
+  if (!vapidPublic || !vapidPrivate) {
+    if (raw.NODE_ENV === 'production') {
+      throw new ConfigError('VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY are required in production (npm run vapid:keys).');
+    }
+    ({ public_key: vapidPublic, private_key: vapidPrivate } = generateVapidKeys());
+    vapidGenerated = true;
+  }
+
+  // FCM (Android): a Firebase service account signs FCM v1 calls. Optional — when absent the
+  // FCM transport is simply off and `fcm` subscriptions ride the polling path instead.
+  const fcm = parseFcm(raw, raw.NODE_ENV);
 
   return {
     env: raw.NODE_ENV,
@@ -130,7 +192,67 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       ai: raw.RATE_LIMIT_AI,
       general: raw.RATE_LIMIT_GENERAL,
     },
+    push: {
+      vapidPublicKey: vapidPublic,
+      vapidPrivateKey: vapidPrivate,
+      vapidPublicGenerated: vapidGenerated,
+      vapidSubject: raw.VAPID_SUBJECT,
+      newsDailyCap: raw.NEWS_PUSH_DAILY_CAP,
+      fcm,
+    },
   };
+}
+
+/**
+ * Assemble FCM credentials from the environment. Accepts either a service-account file
+ * (the JSON downloaded from the Firebase console) or the three values set individually.
+ * Returns null when nothing (or only part) is configured — in production a *partial*
+ * configuration is a hard error so a misconfigured deploy can't silently ship an app whose
+ * Android push never works.
+ */
+function parseFcm(
+  raw: {
+    FIREBASE_SERVICE_ACCOUNT_FILE?: string;
+    FIREBASE_PROJECT_ID?: string;
+    FIREBASE_CLIENT_EMAIL?: string;
+    FIREBASE_PRIVATE_KEY?: string;
+  },
+  nodeEnv: string,
+): { projectId: string; clientEmail: string; privateKey: string } | null {
+  let projectId = raw.FIREBASE_PROJECT_ID?.trim() ?? '';
+  let clientEmail = raw.FIREBASE_CLIENT_EMAIL?.trim() ?? '';
+  // PEM keys arrive with literal "\n" escapes when set through most env files — unescape them.
+  let privateKey = (raw.FIREBASE_PRIVATE_KEY ?? '').replace(/\\n/g, '\n').trim();
+
+  if (raw.FIREBASE_SERVICE_ACCOUNT_FILE) {
+    let parsed: { project_id?: string; client_email?: string; private_key?: string };
+    try {
+      parsed = JSON.parse(readFileSync(raw.FIREBASE_SERVICE_ACCOUNT_FILE, 'utf8'));
+    } catch (error) {
+      throw new ConfigError(
+        `FIREBASE_SERVICE_ACCOUNT_FILE is not readable JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    projectId = projectId || (parsed.project_id ?? '').trim();
+    clientEmail = clientEmail || (parsed.client_email ?? '').trim();
+    privateKey = privateKey || (parsed.private_key ?? '').trim();
+  }
+
+  const set = [projectId, clientEmail, privateKey];
+  if (!set.some(Boolean)) return null; // nothing configured → FCM off
+
+  if (!projectId || !clientEmail || !privateKey || !/BEGIN [A-Z ]*PRIVATE KEY/.test(privateKey)) {
+    if (nodeEnv === 'production') {
+      throw new ConfigError(
+        'FCM configuration is incomplete: set FIREBASE_SERVICE_ACCOUNT_FILE or all of '
+        + 'FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY.',
+      );
+    }
+    // development/test: treat a partial/malformed key as "FCM off" — the client keeps the
+    // honest polling fallback instead of the server crashing over an optional transport.
+    return null;
+  }
+  return { projectId, clientEmail, privateKey };
 }
 
 /** True when at least one cloud provider key is configured. */

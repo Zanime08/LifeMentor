@@ -1,5 +1,8 @@
 import type { DriverOptions, RunResult, SqlDriver, SqlParam } from '../driver';
 import { durabilityPragmas } from '../driver';
+import { createLogger } from '../../util/logging';
+
+const log = createLogger('db');
 
 type DatabaseSyncCtor = typeof import('node:sqlite').DatabaseSync;
 type DatabaseSyncInstance = import('node:sqlite').DatabaseSync;
@@ -48,6 +51,19 @@ export class NodeSqlDriver implements SqlDriver {
     if (this.db) return;
     const mod = await loadNodeSqlite();
     const location = this.options.inMemory ? ':memory:' : (this.options.path ?? 'lifementor.sqlite');
+    if (!this.options.inMemory) {
+      // First launch must not depend on the directory existing (req. 68: no manual steps).
+      const parent = location.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+      if (parent && parent !== '.' && !location.startsWith(':memory:')) {
+        try {
+          const { mkdir } = await import(/* @vite-ignore */ 'node:fs/promises');
+          const { resolve } = await import(/* @vite-ignore */ 'node:path');
+          await mkdir(resolve(parent), { recursive: true });
+        } catch (error) {
+          log.warn('could not create database directory', { parent, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+    }
     this.db = new mod.DatabaseSync(location);
     for (const pragma of durabilityPragmas(this.options.durability, this.options.busyTimeoutMs)) {
       try { this.db.exec(pragma); } catch { /* pragma unsupported on this build — not fatal */ }

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">LifeMentor</string>
+    <string name="title_activity_main">LifeMentor</string>
+    <string name="package_name">ai.lifementor.app</string>
+    <string name="custom_url_scheme">ai.lifementor.app</string>
+</resources>

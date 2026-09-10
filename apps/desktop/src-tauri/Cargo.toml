@@ -1,0 +1,32 @@
+[package]
+name = "lifementor-desktop"
+version = "0.1.0"
+description = "LifeMentor — Windows shell (Tauri 2): owns the local SQLite (rusqlite, WAL) and OS services"
+authors = ["LifeMentor"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "lifementor_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-store = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `bundled` compiles SQLite from source — no system dependency on the release machine.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "TEMPLATE — not a real Firebase project. Copy to google-services.json and replace the",
+    "values with the file downloaded from the Firebase console for package ai.lifementor.app",
+    "(Firebase console → project settings → Your apps → Android (ai.lifementor.app) →",
+    "Project ID / google-services.json). Until then the app builds and works; FCM token",
+    "registration fails and notifications arrive via the polling fallback (docs/11 §8)."
+  ],
+  "project_info": {
+    "project_number": "000000000000",
+    "project_id": "your-firebase-project-id",
+    "storage_bucket": "your-firebase-project-id.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
+        "android_client_info": {
+          "package_name": "ai.lifementor.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "REPLACE-WITH-YOUR-API-KEY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

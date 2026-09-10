@@ -1,0 +1,15 @@
+{
+  "name": "@lifementor/desktop",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "description": "LifeMentor Windows shell (Tauri 2). Packages the shared @lifementor/web bundle; native SQLite (rusqlite) on the Rust side.",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:debug": "tauri build --debug"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}

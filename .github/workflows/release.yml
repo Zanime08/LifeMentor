@@ -1,0 +1,176 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    name: Tests & typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  ui-smoke:
+    name: UI smoke (Playwright)
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run UI smoke tests
+        run: npx playwright test
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            test-results
+            playwright-report
+
+  windows:
+    name: Windows installer (NSIS)
+    needs: tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Toolchain versions
+        run: node --version; npm --version; rustc --version; cargo --version
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: cargo-win-${{ hashFiles('apps/desktop/src-tauri/Cargo.toml') }}
+          restore-keys: cargo-win-
+      - run: npm ci
+      - name: Build LifeMentor for Windows
+        working-directory: apps/desktop
+        shell: pwsh
+        run: npx tauri build 2>&1 | Tee-Object -FilePath tauri-build.log; exit $LASTEXITCODE
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-build-log
+          path: apps/desktop/tauri-build.log
+      - name: Report failure (issue + branch)
+        if: failure()
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/ci-failure-report.ps1; exit 0
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: LifeMentor-Windows
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+
+  android:
+    name: Android APK (release)
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;35.0.0 build-tools;36.0.0'
+      - name: Point gradle at the SDK (local.properties)
+        shell: bash
+        run: echo "sdk.dir=${ANDROID_HOME:-$HOME/.android/sdk}" > apps/mobile/android/local.properties
+      - run: npm ci
+      - name: FCM google-services.json (from secret, or absent → honest fallback)
+        shell: bash
+        run: |
+          if [ -n "${GOOGLE_SERVICES_JSON_B64:-}" ]; then
+            echo "$GOOGLE_SERVICES_JSON_B64" | base64 -d > apps/mobile/android/app/google-services.json
+            echo "real google-services.json from secret — FCM active in this build"
+          else
+            echo "GOOGLE_SERVICES_JSON_B64 not set — google-services plugin not applied,"
+            echo "FCM off at runtime, notifications via polling fallback (docs/11 §8)"
+          fi
+        env:
+          GOOGLE_SERVICES_JSON_B64: ${{ secrets.GOOGLE_SERVICES_JSON_B64 }}
+      - name: Release keystore (from secret, or CI-generated throwaway)
+        shell: bash
+        run: |
+          KS=apps/mobile/android/app/release.keystore
+          if [ -n "${RELEASE_KEY_STORE_B64:-}" ]; then
+            echo "$RELEASE_KEY_STORE_B64" | base64 -d > "$KS"
+            echo "release keystore from secret"
+          else
+            keytool -genkeypair -v -keystore "$KS" -alias lifementor \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass lifementor -keypass lifementor \
+              -dname "CN=LifeMentor, OU=Dev, O=LifeMentor, L=N/A, S=N/A, C=RU"
+            echo "WARNING: CI-GENERATED throwaway keystore — future updates of this APK"
+            echo "need the same key; store a permanent keystore as RELEASE_* secrets (docs/11)"
+          fi
+        env:
+          RELEASE_KEY_STORE_B64: ${{ secrets.RELEASE_KEY_STORE_B64 }}
+      - name: Build release APK
+        shell: bash
+        run: |
+          {
+            npm run shell:android
+            cd apps/mobile/android
+            ./gradlew assembleRelease \
+              -PRELEASE_KEY_STORE="$(pwd)/app/release.keystore" \
+              -PRELEASE_STORE_PASSWORD="$RELEASE_STORE_PASSWORD" \
+              -PRELEASE_KEY_ALIAS="$RELEASE_KEY_ALIAS" \
+              -PRELEASE_KEY_PASSWORD="$RELEASE_KEY_PASSWORD"
+          } 2>&1 | tee android-build.log
+          exit ${PIPESTATUS[0]}
+        env:
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD || 'lifementor' }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS || 'lifementor' }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD || 'lifementor' }}
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-log
+          path: android-build.log
+      - name: Report failure (issue + branch)
+        if: failure()
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/ci-failure-report.ps1 -LogPath android-build.log; exit 0
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LifeMentor-Android
+          path: apps/mobile/android/app/build/outputs/apk/release/*.apk
