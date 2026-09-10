@@ -73,17 +73,83 @@ export function Seg<T extends string>({ value, onChange, options }: { value: T; 
 }
 
 /* ── modal ──────────────────────────────────────────────────────────── */
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Dialog primitive (req. 61: keyboard and screen-reader usable).
+ *
+ * It is a real `role="dialog"` with `aria-modal` and a label taken from its title, it moves focus
+ * inside when it opens, keeps Tab/Shift+Tab within its own controls, closes on Escape or a click on
+ * the backdrop, and returns focus to whatever opened it. Without the focus trap a keyboard user
+ * tabs straight into the page behind the dialog — which is still interactive, just invisible.
+ */
 export function Modal({ title, onClose, children, footer, wide }: { title: React.ReactNode; onClose: () => void; children: React.ReactNode; footer?: React.ReactNode; wide?: boolean }) {
+  const boxRef = React.useRef<HTMLDivElement>(null);
+  const titleId = React.useId();
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    const opener = document.activeElement as HTMLElement | null;
+    const focusables = (): HTMLElement[] => {
+      const all = [...(boxRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])];
+      // `checkVisibility` is unavailable in older WebViews (and in jsdom): assume visible there.
+      return all.filter((el) => {
+        const check = (el as unknown as { checkVisibility?: () => boolean }).checkVisibility;
+        return typeof check === 'function' ? check.call(el) : true;
+      });
+    };
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const list = focusables();
+      if (list.length === 0) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      const inside = Boolean(active && boxRef.current?.contains(active));
+      if (event.shiftKey && (!inside || active === first)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (!inside || active === last)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    // Capture phase: the dialog owns its keys even if something below listens for them.
+    window.addEventListener('keydown', onKey, true);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    // Prefer the first field: a dialog that asks for something should be ready to type into. The
+    // close button is a fallback for read-only dialogs (confirmations, previews).
+    const list = focusables();
+    const firstField = list.find((el) => /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName));
+    (firstField ?? list[0] ?? boxRef.current)?.focus?.();
+
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      document.body.style.overflow = previousOverflow;
+      // Put the user back where they were: closing a dialog must not lose their place.
+      if (opener && document.contains(opener)) opener.focus?.();
+    };
   }, [onClose]);
+
   return (
     <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className={`modal ${wide ? 'wide-modal' : ''}`}>
+      <div
+        className={`modal ${wide ? 'wide-modal' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        ref={boxRef}
+        tabIndex={-1}
+      >
         <div className="modal-head">
-          <h3>{title}</h3>
+          <h3 id={titleId}>{title}</h3>
           <div className="spacer" style={{ flex: 1 }} />
           <Btn kind="ghost" size="sm" onClick={onClose} aria-label="Закрыть">{I.x}</Btn>
         </div>
