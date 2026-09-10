@@ -261,6 +261,65 @@ describe('first run in the browser client (dom, real engine)', () => {
     expect(screen.getAllByText('Экзамен по математике').length).toBeGreaterThan(0);
   }, 120_000);
 
+  it('drives the strategy ladder: add a direction, close it with a reason, keep the history (req. 45, 46, 79–81)', async () => {
+    // The strategy engine (horizons, option comparison, immutable change history) had no screen at
+    // all: implemented in phase 7 and unreachable from the UI. This walks the screen a user gets.
+    window.location.hash = '#/strategy';
+    render(<App />);
+
+    // «Стратегия» is both the sidebar entry and the heading — the usual trap with these screens.
+    await waitFor(() => expect(screen.getAllByText('Стратегия').length).toBeGreaterThan(1), { timeout: 30_000 });
+    // The whole ladder is on screen, and the history panel exists (it is empty until we change
+    // something, which is the point). Onboarding already seeds directions from the confirmed goals,
+    // so this does not assume an empty strategy.
+    expect((await screen.findAllByText(/3–5 лет/)).length).toBeGreaterThan(0);
+    expect(await screen.findByText('История изменений', {}, { timeout: 30_000 })).toBeTruthy();
+
+    // ── Build the ladder from the goals confirmed during onboarding ───────────────
+    await user.click(await button('Собрать из целей'));
+    await waitFor(async () => {
+      const ladder = await openApp()!.services.strategy.ladder();
+      expect(ladder.some((level) => level.items.length > 0)).toBe(true);
+    }, { timeout: 20_000 });
+
+    // ── Add a direction of our own to the far horizon ────────────────────────────
+    const farHorizon = (await screen.findByText('3–5 лет', {}, { timeout: 20_000 })).closest('.card') as HTMLElement;
+    await user.click(within(farHorizon).getByRole('button', { name: '+ направление' }));
+    const modal = document.querySelector('.modal') as HTMLElement;
+    expect(modal).toBeTruthy();
+    await user.type(within(modal).getByPlaceholderText('Что для вас правда на этом горизонте'), 'Жить с дохода от своих продуктов');
+    await user.click(within(modal).getByRole('button', { name: 'Добавить' }));
+
+    await waitFor(async () => {
+      const items = await openApp()!.services.strategy.list('3-5y');
+      expect(items.map((i) => i.title)).toContain('Жить с дохода от своих продуктов');
+    }, { timeout: 20_000 });
+    expect((await screen.findAllByText('Жить с дохода от своих продуктов')).length).toBeGreaterThan(0);
+
+    // ── Close one of them with a reason: the reason must survive in the history ───
+    const goalRow = (await screen.findAllByText(/Жить с дохода от своих продуктов/))[0].closest('.row') as HTMLElement;
+    await user.click(within(goalRow).getByRole('button', { name: 'Закрыть' }));
+    const dropModal = document.querySelector('.modal') as HTMLElement;
+    await user.type(within(dropModal).getByPlaceholderText('Например: выбрал другое направление'), 'Выбрал другое направление');
+    await user.click(within(dropModal).getByRole('button', { name: 'Закрыть направление' }));
+
+    await waitFor(async () => {
+      const changes = await openApp()!.services.strategy.changes({ limit: 30 });
+      expect(changes.some((c) => c.reason === 'Выбрал другое направление')).toBe(true);
+    }, { timeout: 20_000 });
+    expect((await screen.findAllByText(/Выбрал другое направление/, {}, { timeout: 20_000 })).length).toBeGreaterThan(0);
+
+    // ── The option comparison answers with reasoning, never with a promise ───────
+    const firstOption = screen.getAllByPlaceholderText('Например: фриланс на 10 ч/нед')[0];
+    await user.type(firstOption, 'Фриланс по 10 часов в неделю');
+    expect((await screen.findAllByText(/не прогноз успеха|сравнивают варианты/i, {}, { timeout: 20_000 })).length).toBeGreaterThan(0);
+
+    // ── And it all survives a restart, because it lives in SQLite (req. 94) ───────
+    await restartApp();
+    render(<App />);
+    expect((await screen.findAllByText(/Выбрал другое направление/, {}, { timeout: 40_000 })).length).toBeGreaterThan(0);
+  }, 180_000);
+
   it('never let a single uncaught error reach the window (req. 68, 95)', () => {
     expect(uncaught).toEqual([]);
   });

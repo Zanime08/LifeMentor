@@ -17,6 +17,7 @@ import { Skills } from './screens/Skills';
 import { Knowledge } from './screens/Knowledge';
 import { News } from './screens/News';
 import { ProgressScreen } from './screens/Progress';
+import { Strategy } from './screens/Strategy';
 import { Profile } from './screens/Profile';
 import { Settings } from './screens/Settings';
 
@@ -31,6 +32,7 @@ const NAV: { to: string; label: string; icon: string }[] = [
   { to: '/skills', label: 'Навыки', icon: I.skills },
   { to: '/knowledge', label: 'Знания', icon: I.knowledge },
   { to: '/news', label: 'Новости', icon: I.news },
+  { to: '/strategy', label: 'Стратегия', icon: I.knowledge },
   { to: '/progress', label: 'Прогресс', icon: I.progress },
   { to: '/profile', label: 'Профиль', icon: I.profile },
   { to: '/settings', label: 'Настройки', icon: I.settings },
@@ -39,7 +41,7 @@ const NAV: { to: string; label: string; icon: string }[] = [
 const TITLES: Record<string, string> = {
   '/dashboard': 'Главная', '/mentor': 'Наставник', '/today': 'Сегодня', '/calendar': 'Календарь',
   '/goals': 'Цели', '/learning': 'Обучение', '/projects': 'Проекты', '/skills': 'Навыки',
-  '/knowledge': 'Карта знаний', '/news': 'Новости', '/progress': 'Прогресс', '/profile': 'Мой профиль', '/settings': 'Настройки',
+  '/knowledge': 'Карта знаний', '/news': 'Новости', '/strategy': 'Стратегия', '/progress': 'Прогресс', '/profile': 'Мой профиль', '/settings': 'Настройки',
 };
 
 function useOnboardingDone(app: LifeMentorApp | null, version: number): boolean | null {
@@ -185,6 +187,7 @@ function Router() {
         <Route path="/knowledge" element={<Shell><Knowledge /></Shell>} />
         <Route path="/news" element={<Shell><News /></Shell>} />
         <Route path="/progress" element={<Shell><ProgressScreen /></Shell>} />
+        <Route path="/strategy" element={<Shell><Strategy /></Shell>} />
         <Route path="/profile" element={<Shell><Profile /></Shell>} />
         <Route path="/settings" element={<Shell><Settings /></Shell>} />
         <Route path="*" element={<Navigate to="/" replace />} />

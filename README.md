@@ -34,7 +34,7 @@ apps/server/     LifeMentor Server (Fastify, порт 8787): auth (scrypt, JWT, 
                  30 мин, дедупликация по url-hash, urgency, what/why/context), push-уведомления
                  (VAPID Web Push + очередь для polling, срочные новости с дневным лимитом),
                  облачная копия (шифртекст + sha256, сервер не может прочитать), health.
-apps/web/        Веб-приложение (React 18 + Vite): 13 экранов + Auth + двухэтапный onboarding.
+apps/web/        Веб-приложение (React 18 + Vite): 14 экранов + Auth + двухэтапный onboarding.
                  В браузере — реальный SQLite в WebAssembly (sql.js), образ БД хранится в
                  IndexedDB; auth/sync/AI/news идут через сервер. Тот же бандл работает внутри
                  обоих шеллов (bootstrap сам определяет окружение).
@@ -52,7 +52,7 @@ docs/            Проектирование: продуктовая специ
 
 ```bash
 npm install            # зависимости (workspace: core, server, web, mobile, desktop)
-npm test               # 164 автотеста (core + server + web bootstrap + UI-сквозные сценарии
+npm test               # 165 автотестов (core + server + web bootstrap + UI-сквозные сценарии
                        # + контракты драйверов Tauri/Capacitor)
 
 npm run dev --workspace @lifementor/server   # API на :8787

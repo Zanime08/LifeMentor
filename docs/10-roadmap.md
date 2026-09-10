@@ -19,7 +19,7 @@ that exposes it is tracked separately, because a service without a screen is not
 | 6 | Windows + Android shell (Tauri `src-tauri`, Capacitor project, SQL adapters) | ✅ **projects ready** — `apps/desktop/src-tauri` (rusqlite, full `sql_*` invoke contract, NSIS bundle, capabilities, icons) + `apps/mobile` (Capacitor 8, `android/` Gradle project, notification permissions, icons) + shell platform adapters (store/preferences, native-scheduling notifications, dialog/fs, network). Both driver contracts pinned by CI tests (Rust/Android emulators). Binary builds need Rust/JDK — one command on a release machine / tag build (`docs/11-packaging.md`). |
 | 7 | Onboarding: questionnaire + adaptive interview + user-model builder | ✅ done — service (10 tests) + two-stage web wizard (questionnaire → adaptive interview → profile review → confirm) |
 | 8 | Profile + long-term memory + privacy controls | ✅ done — service + Memory Viewer UI ("What the AI knows about me": edit/delete/confirm) |
-| 9 | Goals + tasks + calendar + projects | ✅ done — services + Goals/Calendar/Projects screens |
+| 9 | Goals + tasks + calendar + projects | ✅ done — services + Goals/Calendar/Projects screens. The strategic layer (horizons, options, change history) got its own screen in the phase-20 hardening round |
 | 10 | Daily planner + adaptive rescheduling + strict mode + free time | ✅ done — service + Today screen (day plan, energy, strict-mode reasons) |
 | 11 | AI Orchestrator + providers + tools + Context Engine | ✅ done (14 tests) + Mentor chat screen over the server gateway |
 | 12 | Learning engine + spaced repetition + skills + assessments | ✅ done — service + Learning/Skills/Knowledge screens |
@@ -28,11 +28,11 @@ that exposes it is tracked separately, because a service without a screen is not
 | 15 | Notifications | ✅ **web push + FCM done** — client budget/quiet-hours/smart reminders + local scheduling; server: VAPID Web Push (subscribe/poll/deliver queue, urgent-news push with daily cap), **FCM v1 transport** (RS256 service-account JWT, token revocation, urgent = visible OS notification, data-only otherwise), service worker, polling fallback as the guaranteed path. Activation is external: a Firebase project for `ai.lifementor.app` + a server service account (docs/11 §FCM). |
 | 16 | Sync + offline (queue, incremental push/pull, conflicts) | ✅ done end to end — client engine, server API, two-device integration test |
 | 17 | Backup + restore + export/import + account deletion | ✅ done (local images, JSON archives, rotation, purge, **cloud backup slot**: client-side AES-GCM, server stores ciphertext + sha256, `POST/GET/DELETE /v1/backup`) |
-| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 164 automated tests passing (26 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **bundle boot test (builds `dist/main.mjs` and calls the running server)** + **packaged-archive test (self-contained start on an unconfigured machine)** + **client-bundle credential guard (scans the built client for keys/secrets, with a self-test)** + **dialog contract (keyboard focus, announcement, Escape)** + **`init:env` test** + **maintenance phase gate (snapshots/reviews/backup/retention on a real clock, 10 tests)** + **UI journey tests driving the real client under jsdom**) |
+| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 165 automated tests passing (26 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **bundle boot test (builds `dist/main.mjs` and calls the running server)** + **packaged-archive test (self-contained start on an unconfigured machine)** + **client-bundle credential guard (scans the built client for keys/secrets, with a self-test)** + **dialog contract (keyboard focus, announcement, Escape)** + **`init:env` test** + **maintenance phase gate (snapshots/reviews/backup/retention on a real clock, 10 tests)** + **UI journey tests driving the real client under jsdom**) |
 | 19 | Packaging (Windows NSIS/MSI, Android APK, server release bundle) | 🟡 **one command away** — `npm run package:server` produces a self-contained server archive (single 2 MB `.mjs`, launcher, autostart script, README) that starts on a machine with no dependencies and writes its own stable `.env`; the Windows NSIS installer and the signed APK are built by `release.yml` (Rust/JDK) and attached to the GitHub Release by the `publish` job, with a server bundle artifact next to them — `docs/11-packaging.md` |
 | 20 | Polishing (UI density, empty states, error copy, perf, a11y, hardening) | 🟡 in progress — error copy, toast a11y, icon-button audit, empty states, performance audit, **UI test layer** and the hardening round below are done; deep profiling on a real device is left |
 
-**Test suite today:** 164 tests, 26 files — `packages/core/test` (public API, persistence + WASM
+**Test suite today:** 165 tests, 26 files — `packages/core/test` (public API, persistence + WASM
 driver durability, **Tauri and Capacitor driver contracts — the exact `sql_*` invoke shapes and
 v8 plugin API the shells implement, run against emulated Rust/Android engines**, sync/backup/
 recovery, auth, AI, onboarding), `apps/server/test` (auth API, sync API, AI gateway, news engine
@@ -95,7 +95,7 @@ event that the planner never schedules over, and a restart that keeps every conf
      CI-only (sandbox has no browser) — first run happens on the next tag / manual dispatch.
    - **DONE — performance static audit (§96)**: no `JSON.stringify` in render loops, `useMemo`
      on the compute-heavy screens, heavy work lives in the Rust/WASM layer. No action items.
-   - **Audited, already fine**: empty states on all 13 screens (Russian title + hint + action).
+   - **Audited, already fine**: empty states on all 14 screens (Russian title + hint + action).
    - **DONE — hardening round (2026-09-10)**, found by the new UI/planner tests:
      * the Today screen crashed with `UNIQUE constraint failed: task_history.id` when a plan was
        built twice (every "Построить план", mentor `plan_day`, or onboarding retry). Fixed at the
@@ -117,6 +117,11 @@ event that the planner never schedules over, and a restart that keeps every conf
        `last_backup_at`, which nothing wrote), so the daily backup could pile up; a brand-new
        install also stored an image of an empty database. The timestamp is now written with the
        backup, and a pass with nothing to protect stores nothing.
+     * the strategy engine — the horizon ladder (req. 45), the option comparison with its caveats
+       (req. 46) and the immutable change history (req. 79–81) — was unreachable: **no screen
+       called `services.strategy`**. The new `Strategy` screen exposes all three, and the UI journey
+       test walks it (build the ladder from goals → add a direction → close one with a reason →
+       the reason is in the history after a restart → the comparison explains itself).
      * dialogs were visually modal but not *behaviourally* modal: no `role="dialog"`, focus stayed
        on the page behind, Tab walked out of them, and closing one dropped the user at the top of the
        document. The shared `Modal` now announces itself, focuses the first field, traps Tab, locks
@@ -145,13 +150,14 @@ event that the planner never schedules over, and a restart that keeps every conf
 
 ## Web UI — what is built (`apps/web`, React + Vite, runs as the dev preview)
 
-13 navigation screens + Auth + two-stage Onboarding, all wired to `LifeMentorApp` over the WASM
+14 navigation screens + Auth + two-stage Onboarding, all wired to `LifeMentorApp` over the WASM
 SQLite driver (real SQLite in WebAssembly, image persisted to IndexedDB) with the server for
 auth/sync/AI/news: Dashboard, Mentor (chat + AI tools), Today (deterministic day plan + strict
 mode), Calendar, Goals (hierarchy + reviews), Learning (paths + spaced repetition), Projects,
 Skills (evidence-based), Knowledge (map + gaps), News (server RSS poller feed + digest), Progress
-(daily snapshots, charts, weekly/monthly reviews, strategy layers with immutable change history),
-Profile, and Settings (memory viewer, sync/backup/export-import, account deletion, diagnostics).
+(daily snapshots, charts, weekly/monthly reviews), Strategy (the horizon ladder 3–5y → now with
+the option comparison and the immutable change history — the engine existed from phase 7 but had no
+screen until phase 20), Profile, and Settings (memory viewer, sync/backup/export-import, account deletion, diagnostics).
 
 ## How to run (what actually works today)
 
@@ -174,7 +180,7 @@ npm start                   # run the bundle
 # Secrets (JWT_SECRET, provider keys, VAPID) go in a .env file in the repo
 # root (copy .env.example) — read by the server, gitignored, never sent to clients.
 
-npm test                    # 164 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
+npm test                    # 165 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
 npm run typecheck           # tsc --noEmit over the whole monorepo
 npm run db:integrity        # server database diagnostics
 
