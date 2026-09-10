@@ -28,11 +28,11 @@ that exposes it is tracked separately, because a service without a screen is not
 | 15 | Notifications | ✅ **web push + FCM done** — client budget/quiet-hours/smart reminders + local scheduling; server: VAPID Web Push (subscribe/poll/deliver queue, urgent-news push with daily cap), **FCM v1 transport** (RS256 service-account JWT, token revocation, urgent = visible OS notification, data-only otherwise), service worker, polling fallback as the guaranteed path. Activation is external: a Firebase project for `ai.lifementor.app` + a server service account (docs/11 §FCM). |
 | 16 | Sync + offline (queue, incremental push/pull, conflicts) | ✅ done end to end — client engine, server API, two-device integration test |
 | 17 | Backup + restore + export/import + account deletion | ✅ done (local images, JSON archives, rotation, purge, **cloud backup slot**: client-side AES-GCM, server stores ciphertext + sha256, `POST/GET/DELETE /v1/backup`) |
-| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 200 automated tests passing (31 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **bundle boot test (builds `dist/main.mjs` and calls the running server)** + **packaged-archive test (self-contained start on an unconfigured machine)** + **client-bundle credential guard (scans the built client for keys/secrets, with a self-test)** + **dialog contract (keyboard focus, announcement, Escape)** + **`init:env` test** + **maintenance phase gate (snapshots/reviews/backup/retention on a real clock, 10 tests)** + **real clients against the shipped server bundle (register → two-device sync → AI gateway on a keyless machine)** + **notification gate (quiet hours across a restart, per-type silence, daily budget, first-launch reconciliation)** + **screen-load guard (no silent `.catch`, a failure is shown with a retry)** + **UI journey tests driving the real client under jsdom**) |
+| 18 | Testing (persistence, sync, AI, planner, learning, notifications, API, UI) | ✅ 207 automated tests passing (33 files: core + server + WASM driver durability + **Tauri/Capacitor driver contract tests** + browser bootstrap + push engine (incl. **FCM v1 unit + integration**) + **LLM news enrichment** + cloud backup + **planner phase gate** + **bundle boot test (builds `dist/main.mjs` and calls the running server)** + **packaged-archive test (self-contained start on an unconfigured machine)** + **client-bundle credential guard (scans the built client for keys/secrets, with a self-test)** + **dialog contract (keyboard focus, announcement, Escape)** + **`init:env` test** + **maintenance phase gate (snapshots/reviews/backup/retention on a real clock, 10 tests)** + **real clients against the shipped server bundle (register → two-device sync → AI gateway on a keyless machine)** + **notification gate (quiet hours across a restart, per-type silence, daily budget, first-launch reconciliation)** + **screen-load guard (no silent `.catch`, a failure is shown with a retry)** + **route-level code splitting (every screen its own chunk, guarded at the source and in the built bundle)** + **screen error boundary (a screen that cannot load does not take the app down)** + **UI journey tests driving the real client under jsdom**) |
 | 19 | Packaging (Windows NSIS/MSI, Android APK, server release bundle) | 🟡 **one command away** — `npm run package:server` produces a self-contained server archive (single 2 MB `.mjs`, launcher, autostart script, README) that starts on a machine with no dependencies and writes its own stable `.env`; the Windows NSIS installer and the signed APK are built by `release.yml` (Rust/JDK) and attached to the GitHub Release by the `publish` job, with a server bundle artifact next to them — `docs/11-packaging.md` |
-| 20 | Polishing (UI density, empty states, error copy, perf, a11y, hardening) | 🟡 in progress — error copy, toast a11y, icon-button audit, empty states, performance audit, **UI test layer** and the hardening round below are done; deep profiling on a real device is left |
+| 20 | Polishing (UI density, empty states, error copy, perf, a11y, hardening) | 🟡 in progress — error copy, toast a11y, icon-button audit, empty states, performance audit, **UI test layer**, **route-level code splitting with a checked startup budget** and the hardening round below are done; deep profiling on a real device is left |
 
-**Test suite today:** 200 tests, 31 files — `packages/core/test` (public API, persistence + WASM
+**Test suite today:** 207 tests, 33 files — `packages/core/test` (public API, persistence + WASM
 driver durability, **Tauri and Capacitor driver contracts — the exact `sql_*` invoke shapes and
 v8 plugin API the shells implement, run against emulated Rust/Android engines**, sync/backup/
 recovery, auth, AI, onboarding), `apps/server/test` (auth API, sync API, AI gateway, news engine
@@ -142,6 +142,27 @@ wrote).
        behaviour: the quiet hours the user set survive a restart, urgent events still pass through
        them, the daily budget stops the notification past the limit, and muting one kind leaves the
        others working.
+     * **the client paid for all sixteen screens before showing the first one**: everything was a
+       single 820 kB script — the packaged Windows/Android client had to parse and compile the whole
+       product (Settings alone is 800 lines) before the dashboard appeared. Every screen is now its
+       own chunk behind `lazy()` in `App.tsx`, fetched when its route is opened, with the shell's
+       navigation and the sync indicator usable while it arrives; React + the router moved to a
+       `vendor` chunk that survives an app update in a browser cache. The measurable result on the
+       same build: the startup download fell from **249 kB gzip to 139 kB** (and the dashboard the
+       user actually opens from 249 to ~155 kB). Two guards keep it that way — `lazy-routes.test.ts`
+       reads `App.tsx` and fails on an eager screen import (verified by re-introducing one), and
+       `scripts/check-client-budget.mjs` reads the *built* bundle: a gzip budget for the startup
+       download plus a marker phrase per screen that lives in exactly one screen ("Снепшот дня",
+       "Требуют внимания", …), because a byte budget alone would not notice a small screen riding
+       along in the entry chunk. The script runs in CI on the same job that scans the bundle for
+       credentials, and carries a `--self-test` so the budget cannot silently stop matching.
+     * **a rejected chunk took the whole app with it**: React unmounts the entire tree when a `lazy`
+       component rejects, so a bad connection (browser build) or a damaged application file (packaged
+       build) meant a white page with no message at all. A `ScreenErrorBoundary` inside the shell now
+       catches it — the sidebar, the top bar and the notification bell keep working, and the screen
+       area says «Не удалось загрузить этот экран. Проверьте подключение и попробуйте ещё раз.» with
+       a reload button (reload on purpose: React caches the rejection). It also catches a screen that
+       crashes while rendering, and words the reason through the same `userError` as everything else.
      * **the release job could publish an empty release**: the step that attaches the installers to
        a GitHub Release ended in `|| true`, so a failed upload (an expired token, a path that no
        longer matched) left a release page promising a `LifeMentorSetup.exe` and an `.apk` that were
@@ -286,8 +307,10 @@ npm start                   # run the bundle
 # Secrets (JWT_SECRET, provider keys, VAPID) go in a .env file in the repo
 # root (copy .env.example) — read by the server, gitignored, never sent to clients.
 
-npm test                    # 200 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
+npm test                    # 207 tests (core + server + shell driver contracts + web bootstrap + UI journeys)
 npm run typecheck           # tsc --noEmit over the whole monorepo
+npm run check:client-secrets  # no provider keys / JWT secrets in the built client
+npm run check:client-budget   # screens stay lazy: startup download within its gzip budget
 npm run db:integrity        # server database diagnostics
 
 # Shells (release machine — see docs/11-packaging.md):

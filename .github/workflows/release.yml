@@ -62,6 +62,8 @@ jobs:
         run: npm run build --workspace @lifementor/web
       - name: Fail if any credential reached the bundle
         run: npm run check:client-secrets
+      - name: Fail if a screen crept back into the startup download
+        run: npm run check:client-budget
 
   server:
     name: Server bundle (self-hosted)

@@ -33,6 +33,12 @@ export function userError(e: unknown): string {
   if (/runtime is not available|plugin is not available/i.test(msg)) {
     return 'Платформа недоступна — перезапустите приложение.';
   }
+  // A screen chunk that could not be fetched (screens are lazy): the browser's wording, and the
+  // Capacitor/Tauri equivalents. Checked before the generic network rule, because «Сервер
+  // недоступен, синхронизация догонит позже» is the wrong sentence for "this screen did not load".
+  if (/dynamically imported module|importing a module script failed|loading chunk \w+ failed|error loading dynamically/i.test(msg)) {
+    return 'Не удалось загрузить этот экран. Проверьте подключение и попробуйте ещё раз.';
+  }
   // Network (server calls that the user triggered directly).
   if (/failed to fetch|network|fetch failed|econnrefused|timed? ?out|HTTP (5\d\d|000)/i.test(msg)) {
     return 'Сервер недоступен. Данные сохранены локально — синхронизация догонит позже.';

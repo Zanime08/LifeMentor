@@ -528,11 +528,15 @@ describe('first run in the browser client (dom, real engine)', () => {
     // Settings → Уведомления: the engine has always had per-type preferences, but nothing in the
     // interface (or anywhere else) ever wrote them.
     // The settings tab (class `q-option`), not the shell's notification bell — both are named
-    // "Уведомления" and the bell would navigate away from this screen.
-    const tabs = await screen.findAllByRole('button', { name: 'Уведомления' }, { timeout: 30_000 });
-    const tab = tabs.find((b) => b.className.includes('q-option'));
-    expect(tab, 'the "Уведомления" tab').toBeTruthy();
-    await user.click(tab!);
+    // "Уведомления" and the bell would navigate away from this screen. The screen itself arrives as
+    // its own chunk (screens are lazy), so wait for the tab rather than for the first button with
+    // that name — the shell's bell is already there.
+    const tab = await waitFor(() => {
+      const found = screen.getAllByRole('button', { name: 'Уведомления' }).find((b) => b.className.includes('q-option'));
+      expect(found, 'вкладка «Уведомления»').toBeTruthy();
+      return found!;
+    }, { timeout: 30_000 });
+    await user.click(tab);
     const toggle = await screen.findByRole('button', { name: /Важные новости/ }, { timeout: 20_000 });
     expect(toggle.textContent).toContain('✓');
     await user.click(toggle);

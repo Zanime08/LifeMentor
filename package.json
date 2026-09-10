@@ -33,7 +33,8 @@
     "build:server": "npm run build --workspace @lifementor/server",
     "init:env": "npm run init:env --workspace @lifementor/server",
     "package:server": "npm run build:server && node scripts/package-server.mjs",
-    "check:client-secrets": "node scripts/check-client-secrets.mjs"
+    "check:client-secrets": "node scripts/check-client-secrets.mjs",
+    "check:client-budget": "node scripts/check-client-budget.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

@@ -52,8 +52,11 @@ docs/            Проектирование: продуктовая специ
 
 ```bash
 npm install            # зависимости (workspace: core, server, web, mobile, desktop)
-npm test               # 200 автотестов (core + server + web bootstrap + UI-сквозные сценарии
+npm test               # 207 автотестов (core + server + web bootstrap + UI-сквозные сценарии
                        # + контракты драйверов Tauri/Capacitor)
+npm run build          # сборка core + сервер (один файл) + клиент (экраны — отдельными чанками)
+npm run check:client-budget   # стартовая загрузка клиента остаётся в бюджете (экраны ленивые)
+npm run check:client-secrets  # в собранном клиенте нет ключей провайдеров и JWT-секретов
 
 npm run dev --workspace @lifementor/server   # API на :8787
 npm run dev --workspace @lifementor/web      # веб-приложение на :5173 (прокси /v1 → :8787)

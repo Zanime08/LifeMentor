@@ -1,26 +1,78 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { HashRouter, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import type { LifeMentorApp } from '@lifementor/core';
 import { AppProvider, useApp } from './state/store';
-import { Btn, I, Toasts } from './components/ui';
+import { Btn, I, LoadFailure, Spinner, Toasts } from './components/ui';
+import { userError } from './lib/errors';
 import { todayKey } from './lib/ru';
 import { bestEffort } from './lib/load';
-import { AuthScreen } from './screens/Auth';
-import { Onboarding } from './screens/Onboarding';
-import { Dashboard } from './screens/Dashboard';
-import { Mentor } from './screens/Mentor';
-import { Today } from './screens/Today';
-import { CalendarScreen } from './screens/Calendar';
-import { Goals } from './screens/Goals';
-import { Learning } from './screens/Learning';
-import { Projects } from './screens/Projects';
-import { Skills } from './screens/Skills';
-import { Knowledge } from './screens/Knowledge';
-import { News } from './screens/News';
-import { ProgressScreen } from './screens/Progress';
-import { Strategy } from './screens/Strategy';
-import { Profile } from './screens/Profile';
-import { Settings } from './screens/Settings';
+/**
+ * Screens load on demand (phase-20 perf).
+ *
+ * Everything used to be one 820 kB script: the packaged Windows/Android clients had to parse and
+ * compile all sixteen screens (Settings alone is 800 lines) before the first pixel of the dashboard
+ * appeared. Each screen is now its own chunk, fetched when its route is opened — the person who
+ * opens «Сегодня» never downloads the Settings form, and the shell (sidebar, top bar, «Открываю
+ * вашу базу…») is visible immediately.
+ *
+ * The first-run path matters most: onboarding arrives as its own chunk instead of riding along with
+ * the whole product. In the shells (Tauri, Capacitor) every chunk ships inside the application, so
+ * "loading" stays a local file read.
+ */
+const AuthScreen = lazy(() => import('./screens/Auth').then((m) => ({ default: m.AuthScreen })));
+const Onboarding = lazy(() => import('./screens/Onboarding').then((m) => ({ default: m.Onboarding })));
+const Dashboard = lazy(() => import('./screens/Dashboard').then((m) => ({ default: m.Dashboard })));
+const Mentor = lazy(() => import('./screens/Mentor').then((m) => ({ default: m.Mentor })));
+const Today = lazy(() => import('./screens/Today').then((m) => ({ default: m.Today })));
+const CalendarScreen = lazy(() => import('./screens/Calendar').then((m) => ({ default: m.CalendarScreen })));
+const Goals = lazy(() => import('./screens/Goals').then((m) => ({ default: m.Goals })));
+const Learning = lazy(() => import('./screens/Learning').then((m) => ({ default: m.Learning })));
+const Projects = lazy(() => import('./screens/Projects').then((m) => ({ default: m.Projects })));
+const Skills = lazy(() => import('./screens/Skills').then((m) => ({ default: m.Skills })));
+const Knowledge = lazy(() => import('./screens/Knowledge').then((m) => ({ default: m.Knowledge })));
+const News = lazy(() => import('./screens/News').then((m) => ({ default: m.News })));
+const ProgressScreen = lazy(() => import('./screens/Progress').then((m) => ({ default: m.ProgressScreen })));
+const Strategy = lazy(() => import('./screens/Strategy').then((m) => ({ default: m.Strategy })));
+const Profile = lazy(() => import('./screens/Profile').then((m) => ({ default: m.Profile })));
+const Settings = lazy(() => import('./screens/Settings').then((m) => ({ default: m.Settings })));
+
+/**
+ * A screen chunk that cannot be fetched (no network in the browser build, a damaged application file
+ * in the packaged one) rejects the dynamic import, and React's answer to a rejected `lazy` is to
+ * tear down the whole tree — a white page with no explanation, the worst failure mode this app can
+ * have. The boundary turns it into a sentence and a button. Recovery is a reload on purpose: React
+ * caches the rejection, so re-rendering the same lazy component would fail again.
+ */
+export class ScreenErrorBoundary extends React.Component<{ children: React.ReactNode; what?: string }, { error: unknown }> {
+  override state: { error: unknown } = { error: null };
+  static getDerivedStateFromError(error: unknown): { error: unknown } { return { error }; }
+  override componentDidCatch(error: unknown): void {
+    console.error('[lifementor] screen crashed:', error);
+  }
+  override render(): React.ReactNode {
+    if (!this.state.error) return this.props.children;
+    return (
+      <LoadFailure
+        what={this.props.what ?? 'экран'}
+        message={userError(this.state.error)}
+        onRetry={() => { if (typeof window !== 'undefined') window.location.reload(); }}
+      />
+    );
+  }
+}
+
+/**
+ * Waits for the route's chunk *inside* the shell's content area: the navigation, the sync state and
+ * the bell stay usable while a screen arrives, and the user never sees the app blink to a full-page
+ * spinner between two routes.
+ */
+function Screen({ children }: { children: React.ReactNode }) {
+  return (
+    <ScreenErrorBoundary>
+      <Suspense fallback={<Spinner label="Открываю экран…" />}>{children}</Suspense>
+    </ScreenErrorBoundary>
+  );
+}
 
 const NAV: { to: string; label: string; icon: string }[] = [
   { to: '/dashboard', label: 'Главная', icon: I.dashboard },
@@ -207,26 +259,29 @@ function Router() {
   const done = useOnboardingDone(app, 0);
   return (
     <Gate>
+      {/* Backstop: a crash in the shell itself must not leave a white page either. */}
+      <ScreenErrorBoundary what="приложение">
       <Routes>
         <Route path="/" element={<StartRoute done={done} />} />
-        <Route path="/auth" element={<AuthScreen />} />
-        <Route path="/onboarding" element={<Onboarding />} />
-        <Route path="/dashboard" element={<Shell><Dashboard /></Shell>} />
-        <Route path="/mentor" element={<Shell><Mentor /></Shell>} />
-        <Route path="/today" element={<Shell><Today /></Shell>} />
-        <Route path="/calendar" element={<Shell><CalendarScreen /></Shell>} />
-        <Route path="/goals" element={<Shell><Goals /></Shell>} />
-        <Route path="/learning" element={<Shell><Learning /></Shell>} />
-        <Route path="/projects" element={<Shell><Projects /></Shell>} />
-        <Route path="/skills" element={<Shell><Skills /></Shell>} />
-        <Route path="/knowledge" element={<Shell><Knowledge /></Shell>} />
-        <Route path="/news" element={<Shell><News /></Shell>} />
-        <Route path="/progress" element={<Shell><ProgressScreen /></Shell>} />
-        <Route path="/strategy" element={<Shell><Strategy /></Shell>} />
-        <Route path="/profile" element={<Shell><Profile /></Shell>} />
-        <Route path="/settings" element={<Shell><Settings /></Shell>} />
+        <Route path="/auth" element={<Screen><AuthScreen /></Screen>} />
+        <Route path="/onboarding" element={<Screen><Onboarding /></Screen>} />
+        <Route path="/dashboard" element={<Shell><Screen><Dashboard /></Screen></Shell>} />
+        <Route path="/mentor" element={<Shell><Screen><Mentor /></Screen></Shell>} />
+        <Route path="/today" element={<Shell><Screen><Today /></Screen></Shell>} />
+        <Route path="/calendar" element={<Shell><Screen><CalendarScreen /></Screen></Shell>} />
+        <Route path="/goals" element={<Shell><Screen><Goals /></Screen></Shell>} />
+        <Route path="/learning" element={<Shell><Screen><Learning /></Screen></Shell>} />
+        <Route path="/projects" element={<Shell><Screen><Projects /></Screen></Shell>} />
+        <Route path="/skills" element={<Shell><Screen><Skills /></Screen></Shell>} />
+        <Route path="/knowledge" element={<Shell><Screen><Knowledge /></Screen></Shell>} />
+        <Route path="/news" element={<Shell><Screen><News /></Screen></Shell>} />
+        <Route path="/progress" element={<Shell><Screen><ProgressScreen /></Screen></Shell>} />
+        <Route path="/strategy" element={<Shell><Screen><Strategy /></Screen></Shell>} />
+        <Route path="/profile" element={<Shell><Screen><Profile /></Screen></Shell>} />
+        <Route path="/settings" element={<Shell><Screen><Settings /></Screen></Shell>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      </ScreenErrorBoundary>
     </Gate>
   );
 }

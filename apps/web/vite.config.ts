@@ -20,5 +20,15 @@ export default defineConfig({
   },
   build: {
     chunkSizeWarningLimit: 2000,
+    rollupOptions: {
+      output: {
+        // Vendor (React + the router) is stable across releases: keeping it in its own file means
+        // an app update does not invalidate it in a browser cache.
+        manualChunks: (id: string) => {
+          if (/node_modules\/(react|react-dom|scheduler|react-router|react-router-dom)\//.test(id)) return 'vendor';
+          return undefined;
+        },
+      },
+    },
   },
 });
