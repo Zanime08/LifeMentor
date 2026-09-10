@@ -60,6 +60,23 @@ export interface ConfirmationRequest {
   risk: ToolRisk;
 }
 
+/**
+ * The tool refused because the model's reference was not specific enough (`cancel_task "купить
+ * хлеб"` with three such tasks). The English sentence is written for the model — it literally says
+ * «Ask the user which one they mean — do not pick one yourself» — and it used to be printed to the
+ * user, in English, as a *successful* outcome. The item carries the same facts as data, so the
+ * interface can ask the question in the reader's language.
+ */
+export interface NeedsInputItem {
+  code: 'ambiguous' | 'not_found';
+  /** What kind of thing the model was pointing at: `task`, `goal`, `skill`, `topic`. */
+  kind: string;
+  /** The reference the model used (usually the words the user said). */
+  ref: string;
+  /** What the tool did find instead, when there was more than one candidate. */
+  candidates: string[];
+}
+
 export interface ToolOutcome {
   ok: boolean;
   /** One-line human/LLM readable summary of what happened. */
@@ -69,11 +86,13 @@ export interface ToolOutcome {
   confirmation?: ConfirmationRequest;
   /** Set when arguments are ambiguous/missing and the model must ask the user. */
   needsInput?: string;
+  /** The same refusal as data, for the interface that words it (req. 6, 7). */
+  needs_input_item?: NeedsInputItem;
   error?: string;
   tokens?: number;
 }
 
-export interface ToolResult { message: string; data?: unknown }
+export interface ToolResult { message: string; data?: unknown; ok?: boolean; needsInput?: NeedsInputItem }
 
 export interface ToolDef {
   name: string;
@@ -164,7 +183,14 @@ export class ToolRegistry {
     try {
       const result = await tool.execute(args, ctx);
       log.debug('tool executed', { tool: name, risk: tool.risk });
-      return { ok: true, message: result.message, data: result.data };
+      // A tool that could not identify what it was pointed at has not done anything: reporting it
+      // as `ok` put a ✓ «отменил задачу» chip on the screen for a call that changed nothing.
+      return {
+        ok: result.ok !== false,
+        message: result.message,
+        data: result.data,
+        ...(result.needsInput ? { needsInput: result.message, needs_input_item: result.needsInput } : {}),
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const userMessage = error instanceof AppError && error.userMessage ? error.userMessage : message;
@@ -582,7 +608,7 @@ export function createTools(deps: ToolDeps): ToolRegistry {
     }),
     async execute(args, ctx) {
       const match = await resolveTask(deps, args.task, ctx.day);
-      if (!match.item) return { message: clarification('task', args.task, match.candidates.map((t) => t.title), match.reason) };
+      if (!match.item) return clarification('task', args.task, match.candidates.map((t) => t.title), match.reason);
       if (match.item.status === 'done') return { message: `"${match.item.title}" was already completed.` };
       const task = await deps.tasks.complete(match.item.id, { actual_minutes: args.actual_minutes, note: args.note }, ctx.write);
       return { message: `Completed "${task.title}".`, data: { id: task.id, actual_minutes: task.actual_minutes } };
@@ -602,7 +628,7 @@ export function createTools(deps: ToolDeps): ToolRegistry {
     }),
     async execute(args, ctx) {
       const match = await resolveTask(deps, args.task, ctx.day);
-      if (!match.item) return { message: clarification('task', args.task, match.candidates.map((t) => t.title), match.reason) };
+      if (!match.item) return clarification('task', args.task, match.candidates.map((t) => t.title), match.reason);
       const result = args.new_date || args.new_start
         ? await deps.tasks.reschedule(match.item.id, { date: args.new_date ?? match.item.scheduled_date ?? dayKey(addDays(ctx.now, 1)), start: args.new_start ?? match.item.scheduled_start ?? null }, ctx.write)
         : null;
@@ -632,7 +658,7 @@ export function createTools(deps: ToolDeps): ToolRegistry {
     confirm: (args) => (args.priority === 'P0' ? 'Raise this task to P0 (top priority)?' : null),
     async execute(args, ctx) {
       const match = await resolveTask(deps, args.task, ctx.day);
-      if (!match.item) return { message: clarification('task', args.task, match.candidates.map((t) => t.title), match.reason) };
+      if (!match.item) return clarification('task', args.task, match.candidates.map((t) => t.title), match.reason);
       const { task: _ref, ...patch } = args;
       const updated = await deps.tasks.update(match.item.id, patch, ctx.write);
       return { message: `Updated "${updated.title}".`, data: { id: updated.id, priority: updated.priority, due_date: updated.due_date } };
@@ -685,7 +711,7 @@ export function createTools(deps: ToolDeps): ToolRegistry {
       ? `Mark this goal as ${args.status}? This hides it from planning.` : null),
     async execute(args, ctx) {
       const goal = await resolveGoal(deps, args.goal);
-      if (!goal.item) return { message: clarification('goal', args.goal, goal.candidates.map((g) => g.title), goal.reason) };
+      if (!goal.item) return clarification('goal', args.goal, goal.candidates.map((g) => g.title), goal.reason);
       const { goal: _ref, ...patch } = args;
       const updated = await deps.goals.update(goal.item.id, patch, ctx.write);
       return { message: `Goal "${updated.title}" updated (${updated.status}, ${Math.round(Number(updated.progress))}%).`, data: { id: updated.id, status: updated.status } };
@@ -745,7 +771,7 @@ export function createTools(deps: ToolDeps): ToolRegistry {
     confirm: (args) => `Cancel the task "${args.task}"? It will be removed from planning.`,
     async execute(args, ctx) {
       const match = await resolveTask(deps, args.task, ctx.day);
-      if (!match.item) return { message: clarification('task', args.task, match.candidates.map((t) => t.title), match.reason) };
+      if (!match.item) return clarification('task', args.task, match.candidates.map((t) => t.title), match.reason);
       await deps.tasks.cancel(match.item.id, args.reason ?? null, undefined, ctx.write);
       return { message: `Cancelled "${match.item.title}".`, data: { id: match.item.id } };
     },
@@ -764,7 +790,7 @@ export function createTools(deps: ToolDeps): ToolRegistry {
     }),
     async execute(args, ctx) {
       const topic = await resolveTopic(deps, args.topic);
-      if (!topic.item) return { message: clarification('learning topic', args.topic, topic.candidates.map((t) => t.title), topic.reason) };
+      if (!topic.item) return clarification('learning topic', args.topic, topic.candidates.map((t) => t.title), topic.reason);
       const result = await deps.learning.recordProgress({ topic_id: topic.item.id, kind: args.kind, minutes: args.minutes, score: args.score ?? null, notes: args.notes ?? null }, ctx.write);
       return {
         message: `Logged ${args.minutes}m of ${args.kind} on "${result.topic.title}" — topic now ${Math.round(Number(result.topic.progress))}%, path "${result.path.title}" ${Math.round(Number(result.path.progress))}%.`,
@@ -809,7 +835,7 @@ export function createTools(deps: ToolDeps): ToolRegistry {
     confirm: (_args) => 'Record this skill assessment? Skill levels are evidence-backed and visible in your profile.',
     async execute(args, ctx) {
       const skill = await resolveSkill(deps, args.skill);
-      if (!skill.item) return { message: clarification('skill', args.skill, skill.candidates.map((s) => s.name), skill.reason) };
+      if (!skill.item) return clarification('skill', args.skill, skill.candidates.map((s) => s.name), skill.reason);
       if (!args.evidence_ref && !args.evidence_type && !args.notes) {
         return { message: 'A skill assessment needs evidence (what was done, tested or built). Ask the user for it — do not guess.' };
       }
@@ -1052,11 +1078,15 @@ async function resolveProject(deps: ToolDeps, ref: string): Promise<Match<Projec
   return pick(projects, ref, (p) => p.title);
 }
 
-function clarification(kind: string, ref: string, candidates: string[], reason?: string): string {
-  if (candidates.length) {
-    return `Several ${kind}s match "${ref}": ${candidates.slice(0, 5).map((c) => `"${c}"`).join(', ')}. Ask the user which one they mean — do not pick one yourself.`;
-  }
-  return `No ${kind} matching "${ref}" was found${reason === 'not_found' ? ' among open items' : ''}. Ask the user to confirm the exact name, or create it first.`;
+function clarification(kind: string, ref: string, candidates: string[], reason?: string): ToolResult {
+  const shortlist = candidates.slice(0, 5);
+  const item: NeedsInputItem = { code: shortlist.length ? 'ambiguous' : 'not_found', kind, ref, candidates: shortlist };
+  // The sentence is what the model reads in its tool result: it names the candidates and tells the
+  // model to ask instead of guessing. The user reads the same facts worded by the interface.
+  const message = item.code === 'ambiguous'
+    ? `Several ${kind}s match "${ref}": ${shortlist.map((c) => `"${c}"`).join(', ')}. Ask the user which one they mean — do not pick one yourself.`
+    : `No ${kind} matching "${ref}" was found${reason === 'not_found' ? ' among open items' : ''}. Ask the user to confirm the exact name, or create it first.`;
+  return { ok: false, message, needsInput: item };
 }
 
 function toMin(hhmm: string): number {

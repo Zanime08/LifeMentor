@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { LifeMentorApp } from '../src/app';
 import { LocalHeuristicProvider } from '../src/ai/providers/local';
 import { resolveRelativeDate, resolveRelativeTime } from '../src/ai/tools';
+import { needsInputItemText } from '../src/ai/orchestrator';
 import { dayKey, addDays } from '../src/util/time';
 
 /**
@@ -223,6 +224,43 @@ describe('orchestrator tool loop', () => {
     // The refusal is in the history, so the model does not silently repeat the proposal.
     const history = await app.ai.conversations.history(turn.conversationId, 20);
     expect(history.some((m) => m.role === 'assistant' && m.content === 'Отменено — ничего не менял.')).toBe(true);
+
+    await app.close();
+  });
+
+  it('asks which one was meant instead of guessing, and never reports that as done', async () => {
+    const app = await openApp();
+    await app.services.tasks.create({ title: 'Сдать лабораторную по физике', estimated_minutes: 30 });
+    await app.services.tasks.create({ title: 'Сдать лабораторную по химии', estimated_minutes: 30 });
+
+    // `cancel_task` also carries a destructive-action policy, so the ambiguity surfaces once the
+    // user has approved the call (the hook runs before execute — it is about the action, not the
+    // reference). The approval is the user's word for *this* call, nothing more.
+    const outcome = await app.ai.tools.invoke('cancel_task', { task: 'лабораторную' }, {
+      write: { actor: 'ai' }, day: dayKey(), now: new Date(), approved: ['cancel_task'], language: 'ru',
+    });
+    // The reference fits two tasks: the tool refuses, and the chat must not show «отменил задачу»
+    // with a ✓ while nothing was cancelled (that is what `ok: true` used to mean here).
+    expect(outcome.ok).toBe(false);
+    expect(outcome.needs_input_item).toMatchObject({ code: 'ambiguous', kind: 'task', ref: 'лабораторную' });
+    expect(outcome.needs_input_item?.candidates).toHaveLength(2);
+    // The sentence for the model stays in English: it is an instruction, not a message to the user.
+    expect(outcome.needsInput).toMatch(/Ask the user which one they mean/);
+    // The same refusal as data, worded for the reader.
+    expect(needsInputItemText(outcome.needs_input_item!, true)).toContain('Какой именно вы имели в виду?');
+    expect(needsInputItemText(outcome.needs_input_item!, true)).toContain('«Сдать лабораторную по физике»');
+    expect(needsInputItemText(outcome.needs_input_item!, false)).toContain('Which one did you mean?');
+
+    const stillThere = await app.services.tasks.backlog(50);
+    expect(stillThere.filter((t) => t.status !== 'cancelled').length).toBeGreaterThanOrEqual(2);
+
+    // An unknown name is a different answer: nothing to choose from, ask for the exact title.
+    const missing = await app.ai.tools.invoke('cancel_task', { task: 'написать диссертацию' }, {
+      write: { actor: 'ai' }, day: dayKey(), now: new Date(), approved: ['cancel_task'], language: 'ru',
+    });
+    expect(missing.ok).toBe(false);
+    expect(missing.needs_input_item?.code).toBe('not_found');
+    expect(needsInputItemText(missing.needs_input_item!, true)).toContain('Не нашёл задачу');
 
     await app.close();
   });

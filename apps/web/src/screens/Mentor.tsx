@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { ConfirmationRequest, Message, TurnResult } from '@lifementor/core';
+import type { ConfirmationRequest, Message, NeedsInputItem, TurnResult } from '@lifementor/core';
 import { Btn, I, Spinner, TextArea, Tag } from '../components/ui';
 import { useApp } from '../state/store';
 import { bestEffort } from '../lib/load';
@@ -74,13 +74,27 @@ const NOTIFICATION_REFUSAL_RU: Record<string, string> = {
   invalid: 'напоминание не прошло проверку',
 };
 
-/** Why a tool did not work, as far as the user needs to know. */
-function failureDetail(outcome: { message: string; data?: unknown; needsInput?: string; error?: string }): string | undefined {
+/**
+ * Why a tool did not work, as far as the user needs to know.
+ *
+ * The engine's own sentences are addressed to the model — the one for «which task did you mean»
+ * literally tells it to ask instead of guessing — so the chip says what happened, in Russian, and the
+ * reason the tool is waiting for an answer names the words the user actually used.
+ */
+function failureDetail(outcome: { message: string; data?: unknown; needsInput?: string; needs_input_item?: NeedsInputItem; error?: string }): string | undefined {
   const data = outcome.data as { reason?: string } | undefined;
   if (data?.reason && NOTIFICATION_REFUSAL_RU[data.reason]) return NOTIFICATION_REFUSAL_RU[data.reason];
+  if (outcome.needs_input_item) return needsInputDetail(outcome.needs_input_item);
   if (outcome.needsInput) return 'нужно уточнить детали';
   if (outcome.error) return 'не получилось — причина в журнале';
   return undefined;
+}
+
+/** «Под «хлеб» подходит несколько задач» — short enough for a chip, still about the user's words. */
+function needsInputDetail(item: NeedsInputItem): string {
+  return item.code === 'ambiguous'
+    ? `под «${item.ref}» подходит несколько — уточните`
+    : `не нашёл по «${item.ref}» — уточните название`;
 }
 
 
@@ -198,7 +212,8 @@ export function Mentor() {
       };
       setMessages((m) => [...m, assistant]);
       setPending(turn.confirmations ?? []);
-      if (turn.needsInput) setProactive(turn.needsInput);
+      // No banner for a question: the reply already asks it, in the reader's language, through
+      // `needsInputItemText` — the raw `needsInput` is an instruction written for the model.
     } catch (error) {
       const msg = error && typeof error === 'object' && 'userMessage' in error
         ? String((error as { userMessage: unknown }).userMessage)
@@ -286,7 +301,11 @@ export function Mentor() {
             {m.role === 'assistant' && (m.tools?.length ?? 0) > 0 && (
               <div style={{ marginBottom: 6 }}>
                 {m.tools!.map((t, i) => (
-                  <span key={i} className={`tool-chip ${t.ok ? '' : 'warn'}`}>{t.ok ? '✓' : '⚠'} {TOOL_RU[t.name] ?? t.name}{t.detail ? ` — ${t.detail}` : ''}</span>
+                  // A failed call says what went wrong, not «отменил задачу» with a warning sign —
+                  // the label is written in the past tense of a success.
+                  <span key={i} className={`tool-chip ${t.ok ? '' : 'warn'}`}>
+                    {t.ok ? `✓ ${TOOL_RU[t.name] ?? t.name}` : `⚠ ${t.detail ?? TOOL_RU[t.name] ?? t.name}`}
+                  </span>
                 ))}
               </div>
             )}
@@ -348,8 +367,12 @@ function historyToChat(history: Message[]): { messages: ChatMsg[]; pending: Conf
       let unanswered: ConfirmationRequest[] = [];
       if (m.tool_calls) {
         try {
-          const calls = JSON.parse(m.tool_calls) as { name: string; ok?: boolean; confirmation?: ConfirmationRequest }[];
-          tools = calls.map((c) => ({ name: c.name, ok: c.ok !== false }));
+          const calls = JSON.parse(m.tool_calls) as { name: string; ok?: boolean; confirmation?: ConfirmationRequest; needsInputItem?: NeedsInputItem }[];
+          tools = calls.map((c) => ({
+            name: c.name,
+            ok: c.ok !== false,
+            detail: c.ok === false && c.needsInputItem ? needsInputDetail(c.needsInputItem) : undefined,
+          }));
           unanswered = calls.map((c) => c.confirmation).filter((c): c is ConfirmationRequest => Boolean(c));
         } catch (error) {
           // The message itself is fine; only its tool chips are unreadable. Say so in the console

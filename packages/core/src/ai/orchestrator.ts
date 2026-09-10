@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { AIProvider, GenerationMessage, GenerationResult, ModelTier, StreamDelta, ToolCallRequest } from './types';
 import { zodToJsonSchema, estimateTokens } from './types';
 import { ContextEngine, trimHistory, type BuiltContext, type ContextRequest } from './context-engine';
-import { ToolRegistry, type ConfirmationRequest, type ToolInvocationContext, type ToolOutcome, type ToolRisk } from './tools';
+import { ToolRegistry, type ConfirmationRequest, type NeedsInputItem, type ToolInvocationContext, type ToolOutcome, type ToolRisk } from './tools';
 import { ConversationStore } from './conversation';
 import { LocalHeuristicProvider, detectIntent } from './providers/local';
 import type { MemoryService } from '../services/memory';
@@ -83,7 +83,9 @@ export interface TurnResult {
   degraded: boolean;
   toolCalls: ToolExecution[];
   confirmations: ConfirmationRequest[];
+  /** The refusal in wording for the model; `needsInputItem` is the same refusal as data. */
   needsInput: string | null;
+  needsInputItem: NeedsInputItem | null;
   memoriesSaved: Memory[];
   usage: { promptTokens: number; completionTokens: number; iterations: number; latencyMs: number; contextTokens: number };
   context: { included: string[]; dropped: string[]; warnings: string[] };
@@ -156,6 +158,7 @@ export class AIOrchestrator {
     const executions: ToolExecution[] = [];
     const confirmations: ConfirmationRequest[] = [];
     let needsInput: string | null = null;
+    let needsInputItem: NeedsInputItem | null = null;
     let reply = '';
     let last: GenerationResult | null = null;
     let promptTokens = 0;
@@ -199,6 +202,7 @@ export class AIOrchestrator {
 
         if (outcome.confirmation) confirmations.push(outcome.confirmation);
         if (outcome.needsInput && !needsInput) needsInput = outcome.needsInput;
+        if (outcome.needs_input_item && !needsInputItem) needsInputItem = outcome.needs_input_item;
 
         messages.push({
           role: 'tool',
@@ -210,7 +214,7 @@ export class AIOrchestrator {
 
       // Anything requiring the user's decision ends the loop: never act on their behalf twice.
       if (confirmations.length || needsInput) {
-        reply = composeBlockedReply(confirmations, needsInput, executions, settings.ai.language);
+        reply = composeBlockedReply(confirmations, needsInputItem, needsInput, executions, settings.ai.language);
         break;
       }
       if (isLast) {
@@ -234,6 +238,7 @@ export class AIOrchestrator {
           name: e.call.name,
           ok: e.outcome.ok,
           ...(e.outcome.confirmation ? { confirmation: e.outcome.confirmation } : {}),
+          ...(e.outcome.needs_input_item ? { needsInputItem: e.outcome.needs_input_item } : {}),
         }))
         : undefined,
     }, write);
@@ -257,6 +262,7 @@ export class AIOrchestrator {
       toolCalls: executions,
       confirmations,
       needsInput,
+      needsInputItem,
       memoriesSaved,
       usage: { promptTokens, completionTokens, iterations, latencyMs: Date.now() - started, contextTokens: built.totalTokens },
       context: { included: built.included, dropped: built.dropped, warnings: built.warnings },
@@ -480,18 +486,50 @@ function summariseData(data: unknown, maxTokens = 500): unknown {
   return { truncated: true, preview: json.slice(0, maxTokens * 4) };
 }
 
-function composeBlockedReply(confirmations: ConfirmationRequest[], needsInput: string | null, executions: ToolExecution[], language: string): string {
+function composeBlockedReply(
+  confirmations: ConfirmationRequest[],
+  needsInputItem: NeedsInputItem | null,
+  needsInput: string | null,
+  executions: ToolExecution[],
+  language: string,
+): string {
+  const ru = language.toLowerCase().startsWith('ru');
   const done = executions.filter((e) => e.outcome.ok).map((e) => e.outcome.message);
   const parts: string[] = [];
   if (done.length) parts.push(done.join('\n'));
   if (confirmations.length) {
-    const ru = language.toLowerCase().startsWith('ru');
+    // In Russian the question is rendered as a card with buttons, worded from the tool and its
+    // arguments (`lib/confirm-ru.ts`); the stored sentence only has to point at it. The engine's
+    // `detail` is written for the model and stays out of what the person reads.
     parts.push(ru
-      ? `Нужно подтверждение:\n${confirmations.map((c) => `• ${c.detail}`).join('\n')}`
+      ? `Нужно ваше решение перед действием (${confirmations.length}) — ответьте кнопками ниже.`
       : `I need your confirmation before acting:\n${confirmations.map((c) => `• ${c.detail}`).join('\n')}`);
   }
-  if (needsInput) parts.push(needsInput);
+  if (needsInputItem) parts.push(needsInputItemText(needsInputItem, ru));
+  else if (needsInput) parts.push(needsInput);
   return parts.join('\n\n');
+}
+
+/**
+ * «What exactly did you mean?» in the reader's language, built from the structured refusal — the
+ * tool's own sentence is written for the model («do not pick one yourself») and is never shown.
+ */
+export function needsInputItemText(item: NeedsInputItem, ru: boolean): string {
+  const kinds: Record<string, [string, string]> = {
+    task: ['задачу', 'task'], goal: ['цель', 'goal'], skill: ['навык', 'skill'],
+    topic: ['тему обучения', 'learning topic'], project: ['проект', 'project'],
+    memory: ['запись в памяти', 'memory'], event: ['событие', 'event'],
+  };
+  const [ruKind, enKind] = kinds[item.kind] ?? [item.kind, item.kind];
+  const list = item.candidates.map((c) => `«${c}»`).join(', ');
+  if (item.code === 'ambiguous') {
+    return ru
+      ? `Под «${item.ref}» подходит несколько: ${list}. Какой именно вы имели в виду?`
+      : `Several ${enKind}s match "${item.ref}": ${list}. Which one did you mean?`;
+  }
+  return ru
+    ? `Не нашёл ${ruKind} по запросу «${item.ref}». Уточните название — или скажите, что создать.`
+    : `I could not find a ${enKind} matching "${item.ref}". Tell me the exact name, or say to create it.`;
 }
 
 function summariseExecutions(executions: ToolExecution[], language: string): string {
