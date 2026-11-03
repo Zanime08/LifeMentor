@@ -160,6 +160,85 @@ Provider API keys are **not** invented by any of this; add `OPENAI_API_KEY` / `A
 
 Check it with `http://localhost:8787/v1/health` (`ok: true`, `integrity.ok: true`).
 
+## Connecting a third-party OpenAI-compatible gateway (any vendor)
+
+The AI layer speaks the OpenAI wire protocol, so **any** endpoint that implements
+`POST /chat/completions` can drive the assistant — an official API, a self-hosted vLLM/Ollama,
+or a reseller gateway. The key stays on the server (the clients only know the server URL), and
+no client is rebuilt: the app reads its model through the gateway.
+
+```env
+OPENAI_API_KEY=sk-...                      # the vendor's key
+OPENAI_BASE_URL=https://vendor.example/v1  # no trailing /chat/completions — just the base
+AI_MODEL_CHEAP=gpt-6.1-sol                 # all three tiers may be the same model
+AI_MODEL_MID=gpt-6.1-sol
+AI_MODEL_STRONG=gpt-6.1-sol
+```
+
+Restart the server; `GET /v1/health` then reports `ai.provider: "openai"` instead of
+`local-heuristic`, and `GET /v1/ai/usage` starts recording real token counts per request
+(per-user daily ceiling: `AI_DAILY_TOKEN_BUDGET`, default 400 000).
+
+### Check the vendor before trusting it with the app
+
+`npm run ai:probe` (or `npm run ai:probe --workspace @lifementor/server`) reads those variables
+and tests the five things LifeMentor actually uses, against **the vendor itself** — not against
+our fallback chain:
+
+```
+Провайдер: https://vendor.example/v1
+Модель:    gpt-6.1-sol
+
+  ✓ models 40 мс    2 моделей; «gpt-6.1-sol» в списке
+  ✓ chat   6 мс     ответ: «работает»
+  ✓ tools  3 мс     модель вызвала get_tasks с аргументами {"limit":5}
+  ✓ schema 2 мс     JSON по схеме пришёл
+  ✓ stream 3 мс     SSE, 3 chunk(ов)
+
+Итог: всё, что нужно приложению (чат, функции, JSON, поток), работает.
+
+Для .env рядом с сервером:
+  OPENAI_API_KEY=sk-dem…(ваш ключ)
+  OPENAI_BASE_URL=https://vendor.example/v1
+  AI_MODEL_MID=gpt-6.1-sol
+  …
+```
+
+Why it matters: plain chat is the smallest part of what the assistant does.
+
+* **tools** — every action (create a task, plan the day, save a memory) is a function call.
+  A gateway that drops `tools` answers "I cannot do that" while the app still looks healthy.
+* **schema** — memories, reviews and onboarding proposals are `response_format: json_schema`
+  calls. Without them those features quietly drop to the deterministic wording.
+* **stream** — cosmetic: a buffered reply still works, it just appears at once.
+
+Whatever the vendor refuses, the call **degrades to the built-in offline engine** instead of
+failing, so the app never breaks — but the user gets less than they paid for, silently. That is
+exactly what the probe makes visible. `npm run ai:probe` exits `0` when the endpoint can drive
+the app, `1` when chat does not work, `2` when no key was given.
+
+### Honest limits of reseller gateways
+
+Cheap "free credit" gateways (the kind advertised with a referral link and a $175 balance) are
+usually a proxy in front of unknown upstream capacity. Observed in the wild and reported by
+their own users: the balance is displayed but the request is answered with
+`402 Budget pool quota has been exhausted`; the model ids are vendor-invented names that may map
+to a smaller model than advertised; latency and availability have no SLA; there is no published
+retention policy, so **every goal, memory and chat message is readable by a third party**.
+For a personal-development database — arguably the most private data a person has — that is the
+part to weigh, not the price. Recommendations:
+
+* run the probe before the first real conversation; if `tools` is missing, the assistant cannot
+  act on the user's data at all;
+* keep the official provider key in `.env` as a second link in the chain
+  (`ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` are tried when the first provider fails);
+* a real API key on a mini-tier model costs on the order of **$0.0008 per chat turn** with this
+  app's prompt size (~5 k tokens), i.e. single-digit dollars per year for one person at 10
+  messages a day — measured with `npm run ai:probe` + `GET /v1/ai/usage`, not estimated from a
+  price list;
+* never put such a key in the Windows/Android client: the gateway exists precisely so that the
+  key has one home.
+
 ## Icons
 
 `assets/app-icon-1024.png` is the master icon. `scripts/generate-icons.mjs` renders it

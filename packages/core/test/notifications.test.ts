@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { LifeMentorApp, NOTIFICATION_TYPES } from '@lifementor/core';
+import { LifeMentorApp, NOTIFICATION_TYPES, addDays, dayKey } from '@lifementor/core';
 
 /**
  * The notification gate (req. 84–87, 43): enabled? quiet hours? duplicate? daily budget?
@@ -123,7 +123,7 @@ describe('notification preferences', () => {
     const app = await open('plan-ru');
     await app.services.settings.setMany({ ai: { language: 'ru' }, profile: { locale: 'ru' } });
     const plan = {
-      day: '2026-09-11',
+      day: '1970-01-01', // each call below passes a real, future day
       slots: [
         { start: '09:00', end: '10:00', kind: 'task' as const, title: 'Прочитать главу 3', taskId: 'task-1', priority: 'P1' as const,
           note: 'due today · serves a goal', note_items: [{ code: 'due_today' as const }, { code: 'serves_goal' as const }] },
@@ -137,7 +137,12 @@ describe('notification preferences', () => {
       warning_items: [{ code: 'overload' as const, params: { demanded: 360, capacity: 180, fixed: 300, deferred: 1 } }],
       generated_at: new Date().toISOString(),
     };
-    const created = await app.services.notifications.scheduleFromPlan(plan, { leadMinutes: 10 });
+    // The scheduler drops blocks that have already started, so the plan must be about a day that
+    // is still ahead. A hardcoded date turns this test red the morning the calendar passes it —
+    // which is exactly what happened: it was green in September and failed in November.
+    const upcoming = dayKey(addDays(new Date(), 1));
+    const following = dayKey(addDays(new Date(), 2));
+    const created = await app.services.notifications.scheduleFromPlan({ ...plan, day: upcoming }, { leadMinutes: 10 });
     const rows = await app.repos.notifications.find({ cancelled_at: null }, { limit: 20 });
 
     // The reminder the OS shows for a block the engine named itself is Russian…
@@ -159,7 +164,7 @@ describe('notification preferences', () => {
     // An English reader still gets English.
     await app.services.settings.setMany({ ai: { language: 'en' }, profile: { locale: 'en' } });
     await app.services.notifications.cancelFor('task', 'task-1');
-    const english = await app.services.notifications.scheduleFromPlan({ ...plan, day: '2026-09-12' }, { leadMinutes: 10 });
+    const english = await app.services.notifications.scheduleFromPlan({ ...plan, day: following }, { leadMinutes: 10 });
     const englishReview = english.find((n) => n.type === 'daily_plan')!;
     expect(englishReview.title).toContain('Today:');
     expect(englishReview.body).toContain('First: 09:00 Прочитать главу 3.');

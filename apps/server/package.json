@@ -13,6 +13,7 @@
     "db:integrity": "tsx src/tools/integrity.ts",
     "integrity": "tsx src/tools/integrity.ts",
     "vapid:keys": "tsx src/tools/vapid-keys.ts",
+    "ai:probe": "tsx src/tools/ai-probe.ts",
     "init:env": "tsx src/tools/init-env.ts"
   },
   "dependencies": {
