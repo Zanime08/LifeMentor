@@ -74,6 +74,38 @@ const ConfigSchema = z.object({
   RATE_LIMIT_GENERAL: numberish(300),
 });
 
+/**
+ * Keys that look like they belong to a different provider.
+ *
+ * A copy-paste mistake here is invisible: the server starts, `/v1/health` reports
+ * `cloudKeys.openai: true`, every AI call returns 401, the orchestrator degrades to the offline
+ * engine — and the app looks like "the AI is just bad". The prefix is the one clue available
+ * before a request is made, so it is worth saying out loud at startup.
+ */
+export function providerKeyWarnings(config: ServerConfig): string[] {
+  const out: string[] = [];
+  const googleish = (key: string): boolean => /^AQ\.|^AIza/.test(key);
+  const openaiish = (key: string): boolean => key.startsWith('sk-') && !key.startsWith('sk-ant-');
+  const anthropicish = (key: string): boolean => key.startsWith('sk-ant-');
+
+  if (config.ai.openaiKey && googleish(config.ai.openaiKey)) {
+    out.push('OPENAI_API_KEY looks like a Google AI Studio key (AQ.… / AIza…) — put it in GOOGLE_API_KEY, or it is sent to api.openai.com and rejected');
+  }
+  if (config.ai.openaiKey && anthropicish(config.ai.openaiKey)) {
+    out.push('OPENAI_API_KEY looks like an Anthropic key (sk-ant-…) — put it in ANTHROPIC_API_KEY');
+  }
+  if (config.ai.anthropicKey && openaiish(config.ai.anthropicKey)) {
+    out.push('ANTHROPIC_API_KEY looks like an OpenAI-compatible key (sk-…, not sk-ant-) — put it in OPENAI_API_KEY');
+  }
+  if (config.ai.googleKey && (openaiish(config.ai.googleKey) || anthropicish(config.ai.googleKey))) {
+    out.push('GOOGLE_API_KEY looks like an OpenAI/Anthropic key (sk-…) — put it in OPENAI_API_KEY or ANTHROPIC_API_KEY');
+  }
+  if (config.ai.openaiBaseUrl && /agentrouter|openrouter/i.test(config.ai.openaiBaseUrl) && !config.ai.openaiKey) {
+    out.push('OPENAI_BASE_URL points at a gateway but OPENAI_API_KEY is empty — the gateway will answer 401');
+  }
+  return out;
+}
+
 export interface ServerConfig {
   env: 'development' | 'production' | 'test';
   host: string;

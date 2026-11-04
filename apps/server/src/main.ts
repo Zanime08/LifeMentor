@@ -1,4 +1,4 @@
-import { loadConfig, ConfigError, hasCloudAI } from './config';
+import { loadConfig, ConfigError, hasCloudAI, providerKeyWarnings } from './config';
 import { hasEnvFile, loadDotEnv } from './dotenv';
 import { initEnv } from './tools/init-env';
 import { buildServer } from './app';
@@ -44,6 +44,9 @@ async function main(): Promise<void> {
   if (!hasCloudAI(config)) {
     app.log.warn('No OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY — the AI gateway serves the local heuristic provider');
   }
+  // A key in the wrong variable is the one configuration mistake that fails *silently*: every call
+  // is rejected by the wrong provider and the app quietly answers with the offline engine instead.
+  for (const warning of providerKeyWarnings(config)) app.log.warn(warning);
   if (config.push.vapidPublicGenerated) {
     app.log.warn('VAPID key pair was generated for this run only — set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY so push subscriptions survive a restart (npm run vapid:keys)');
   }
